@@ -1,0 +1,25 @@
+{
+	"compilerOptions": {
+		"types": ["bun"],
+		"target": "ES2022",
+		"lib": ["DOM", "DOM.Iterable", "ESNext"],
+		"module": "ESNext",
+		"moduleResolution": "bundler",
+		"jsx": "react-jsx",
+		"strict": true,
+		"noEmit": true,
+		"esModuleInterop": true,
+		"skipLibCheck": true,
+		"forceConsistentCasingInFileNames": true,
+		"resolveJsonModule": true,
+		"isolatedModules": true,
+		"allowImportingTsExtensions": true,
+		"paths": {
+			"@/*": ["./src/mainview/*"],
+			"shared/*": ["./shared/*"]
+		},
+		"baseUrl": "."
+	},
+	"include": ["src/**/*", "shared/**/*"],
+	"exclude": ["node_modules", "dist"]
+}

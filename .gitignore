@@ -1,0 +1,12 @@
+node_modules/
+dist/
+build/
+artifacts/
+desktop/
+*.app
+*.dmg
+*.exe
+*.AppImage
+.env
+.env.*
+!.env.example
