@@ -9,6 +9,7 @@
     "app": "USE_WEBVIEW_DEV_SERVER=1 electrobun dev",
     "app:watch": "USE_WEBVIEW_DEV_SERVER=1 electrobun dev --watch",
     "start:bundled": "vite build && electrobun dev",
+    "build": "vite build",
     "build:canary": "vite build && electrobun build --env=canary",
     "build:stable": "vite build && electrobun build --env=stable",
     "appbun:create": "bunx --bun appbun@latest create ${APPBUN_URL:-http://localhost:5173} --name \"Litecheats\" --out-dir ./desktop/litecheats --yes",
