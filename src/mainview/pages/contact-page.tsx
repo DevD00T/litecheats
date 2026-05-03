@@ -7,7 +7,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { electrobun } from "@/lib/electrobun";
 import { gsap } from "gsap";
 import { type FormEvent, useLayoutEffect, useRef, useState } from "react";
+import type { ContactInquiryPayload, ContactInquiryResult } from "shared/rpc";
 import { toast } from "sonner";
+
+const CONTACT_API_PATH = "/contact/inquiry";
 
 const channels = [
 	{
@@ -68,7 +71,7 @@ export function ContactPage() {
 		const form = event.currentTarget;
 		const formData = new FormData(form);
 
-		const payload = {
+		const payload: ContactInquiryPayload = {
 			fullName: String(formData.get("fullName") ?? "").trim(),
 			email: String(formData.get("email") ?? "").trim(),
 			company: String(formData.get("company") ?? "").trim(),
@@ -80,16 +83,41 @@ export function ContactPage() {
 			return;
 		}
 
-		if (!electrobun.rpc) {
-			toast.error("RPC bridge is not ready yet. Please try again.");
-			return;
-		}
-
 		setIsSubmitting(true);
 		setSubmitted(false);
 
 		try {
-			await electrobun.rpc.request.sendContactInquiry(payload);
+			if (electrobun.rpc) {
+				await electrobun.rpc.request.sendContactInquiry(payload);
+			} else {
+				const response = await fetch(CONTACT_API_PATH, {
+					method: "POST",
+					credentials: "include",
+					headers: {
+						"Content-Type": "application/json",
+					},
+					body: JSON.stringify(payload),
+				});
+
+				if (!response.ok) {
+					const fallback = "Failed to send enquiry.";
+					let errorMessage = fallback;
+					try {
+						const data = (await response.json()) as { error?: string };
+						if (typeof data.error === "string" && data.error.trim()) {
+							errorMessage = data.error;
+						}
+					} catch {
+						// Ignore malformed error payloads.
+					}
+					throw new Error(errorMessage);
+				}
+
+				const data = (await response.json()) as ContactInquiryResult;
+				if (!data?.id) {
+					throw new Error("Failed to send enquiry.");
+				}
+			}
 			form.reset();
 			setSubmitted(true);
 			toast.success("Enquiry sent successfully. We will get back to you soon.");

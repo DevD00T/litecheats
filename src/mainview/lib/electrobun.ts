@@ -9,4 +9,19 @@ const rpc = Electroview.defineRPC<MainRPC>({
 	},
 });
 
-export const electrobun = new Electroview({ rpc });
+type ElectrobunBridge = {
+	rpc?: typeof rpc;
+};
+
+function hasElectrobunRuntimeBridge(): boolean {
+	if (typeof window === "undefined") {
+		return false;
+	}
+
+	const hostWindow = window as Window & { __electrobun?: unknown };
+	return Boolean(hostWindow.__electrobun);
+}
+
+export const electrobun: ElectrobunBridge = hasElectrobunRuntimeBridge()
+	? new Electroview({ rpc })
+	: { rpc: undefined };

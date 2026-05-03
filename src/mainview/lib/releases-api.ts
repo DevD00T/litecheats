@@ -1,7 +1,18 @@
 import { AUTH_API_PORT } from "shared/auth";
 import { DOWNLOADS_BASE_PATH, type ReleaseFeedResponse } from "shared/releases";
 
-const RELEASES_API_ORIGIN = `http://localhost:${AUTH_API_PORT}`;
+function resolveReleasesApiOrigin(): string {
+	if (typeof window !== "undefined") {
+		const protocol = window.location.protocol;
+		if (protocol === "http:" || protocol === "https:") {
+			return window.location.origin;
+		}
+	}
+
+	return `http://localhost:${AUTH_API_PORT}`;
+}
+
+const RELEASES_API_ORIGIN = resolveReleasesApiOrigin();
 const RELEASES_API_URL = `${RELEASES_API_ORIGIN}${DOWNLOADS_BASE_PATH}`;
 
 interface ApiErrorResponse {

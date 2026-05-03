@@ -9,7 +9,18 @@ import {
 	type UpdateProfilePayload,
 } from "shared/auth";
 
-const AUTH_API_ORIGIN = `http://localhost:${AUTH_API_PORT}`;
+function resolveAuthApiOrigin(): string {
+	if (typeof window !== "undefined") {
+		const protocol = window.location.protocol;
+		if (protocol === "http:" || protocol === "https:") {
+			return window.location.origin;
+		}
+	}
+
+	return `http://localhost:${AUTH_API_PORT}`;
+}
+
+const AUTH_API_ORIGIN = resolveAuthApiOrigin();
 const AUTH_API_URL = `${AUTH_API_ORIGIN}${AUTH_BASE_PATH}`;
 
 export class AuthApiError extends Error {
