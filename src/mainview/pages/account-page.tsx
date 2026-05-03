@@ -6,7 +6,13 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { type FormEvent, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { USER_ROLES } from "shared/auth";
 import { toast } from "sonner";
+
+function formatRole(role: string): string {
+	if (!role) return role;
+	return role.charAt(0).toUpperCase() + role.slice(1);
+}
 
 export function AccountPage() {
 	const navigate = useNavigate();
@@ -84,13 +90,52 @@ export function AccountPage() {
 						</Badge>
 						<CardTitle className="font-heading text-3xl">Session Profile</CardTitle>
 						<CardDescription>
-							Manage your account details with MongoDB-backed CRUD operations.
+							View your assigned roles and maintain your account details.
 						</CardDescription>
 					</CardHeader>
 					<CardContent className="space-y-5">
 						<div className="rounded-lg border border-border/65 bg-muted/25 p-4 text-sm">
 							<p className="text-muted-foreground">Signed in as</p>
 							<p className="font-medium text-foreground">{user?.email ?? "Unknown"}</p>
+						</div>
+						<div className="grid gap-3 rounded-lg border border-border/65 bg-muted/25 p-4 text-sm">
+							<div className="space-y-2">
+								<p className="text-muted-foreground">Access Status</p>
+								<div className="flex flex-wrap gap-2">
+									<Badge
+										variant={user?.isAdmin ? "secondary" : "outline"}
+										className={user?.isAdmin ? "bg-primary/12 text-primary" : undefined}
+									>
+										Admin {user?.isAdmin ? "Enabled" : "Disabled"}
+									</Badge>
+									<Badge
+										variant={user?.isOwner ? "secondary" : "outline"}
+										className={user?.isOwner ? "bg-primary/12 text-primary" : undefined}
+									>
+										Owner {user?.isOwner ? "Enabled" : "Disabled"}
+									</Badge>
+								</div>
+							</div>
+							<div className="space-y-2">
+								<p className="text-muted-foreground">Your Roles</p>
+								<div className="flex flex-wrap gap-2">
+									{(user?.roles?.length ? user.roles : ["user"]).map((role) => (
+										<Badge key={role} variant="secondary" className="bg-primary/12 text-primary">
+											{formatRole(role)}
+										</Badge>
+									))}
+								</div>
+							</div>
+							<div className="space-y-2">
+								<p className="text-muted-foreground">Available Platform Roles</p>
+								<div className="flex flex-wrap gap-2">
+									{USER_ROLES.map((role) => (
+										<Badge key={role} variant="outline">
+											{formatRole(role)}
+										</Badge>
+									))}
+								</div>
+							</div>
 						</div>
 						<form className="grid gap-4" onSubmit={handleSaveProfile}>
 							<div className="grid gap-2">

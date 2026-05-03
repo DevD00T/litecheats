@@ -16,10 +16,13 @@ import {
 	type ApiErrorResponse,
 	type AuthSuccessResponse,
 	type AuthUser,
+	DEFAULT_USER_ROLE,
 	type LoginPayload,
 	type SessionResponse,
 	type SignupPayload,
+	USER_ROLES,
 	type UpdateProfilePayload,
+	type UserRole,
 } from "../../shared/auth";
 import {
 	DOWNLOADS_BASE_PATH,
@@ -45,6 +48,9 @@ interface UserDocument extends Document {
 	emailLower: string;
 	fullName: string;
 	company: string;
+	roles?: unknown;
+	isAdmin?: unknown;
+	isOwner?: unknown;
 	passwordHash: string;
 	createdAt: Date;
 	updatedAt: Date;
@@ -101,12 +107,48 @@ function normalizeEmail(email: string): string {
 	return email.trim().toLowerCase();
 }
 
+function sanitizeRoleFlag(value: unknown): boolean {
+	return value === true;
+}
+
+function sanitizeUserRoles(roles: unknown): UserRole[] {
+	if (Array.isArray(roles)) {
+		const filtered = roles.filter(
+			(role): role is UserRole => typeof role === "string" && USER_ROLES.includes(role as UserRole),
+		);
+		return filtered.length > 0 ? [...new Set(filtered)] : [DEFAULT_USER_ROLE];
+	}
+
+	if (typeof roles === "string" && USER_ROLES.includes(roles as UserRole)) {
+		return [roles as UserRole];
+	}
+
+	return [DEFAULT_USER_ROLE];
+}
+
 function toAuthUser(user: WithId<UserDocument>): AuthUser {
+	const isAdmin = sanitizeRoleFlag(user.isAdmin);
+	const isOwner = sanitizeRoleFlag(user.isOwner);
+	const storedRoles = sanitizeUserRoles(user.roles).filter(
+		(role) => role !== "admin" && role !== "owner",
+	);
+	const roles = [...new Set([DEFAULT_USER_ROLE, ...storedRoles])];
+
+	if (isAdmin) {
+		roles.push("admin");
+	}
+	if (isOwner) {
+		roles.push("owner");
+	}
+
 	return {
 		id: user._id,
 		email: user.email,
 		fullName: user.fullName,
 		company: user.company,
+		isAdmin,
+		isOwner,
+		roles,
 		createdAt: user.createdAt.toISOString(),
 		updatedAt: user.updatedAt.toISOString(),
 	};
@@ -301,6 +343,9 @@ async function ensureMongoSchema(db: Db): Promise<void> {
 				"emailLower",
 				"fullName",
 				"company",
+				"isAdmin",
+				"isOwner",
+				"roles",
 				"passwordHash",
 				"createdAt",
 				"updatedAt",
@@ -311,6 +356,17 @@ async function ensureMongoSchema(db: Db): Promise<void> {
 				emailLower: { bsonType: "string" },
 				fullName: { bsonType: "string" },
 				company: { bsonType: "string" },
+				isAdmin: { bsonType: "bool" },
+				isOwner: { bsonType: "bool" },
+				roles: {
+					bsonType: "array",
+					minItems: 1,
+					uniqueItems: true,
+					items: {
+						bsonType: "string",
+						enum: [...USER_ROLES],
+					},
+				},
 				passwordHash: { bsonType: "string" },
 				createdAt: { bsonType: "date" },
 				updatedAt: { bsonType: "date" },
@@ -387,7 +443,68 @@ async function ensureMongoSchema(db: Db): Promise<void> {
 	const releaseVersions = db.collection<ReleaseVersionDocument>("release_versions");
 	const releaseArtifacts = db.collection<ReleaseArtifactDocument>("release_artifacts");
 
+	const migrationTimestamp = new Date();
+	await users.updateMany(
+		{ isAdmin: { $exists: false } },
+		{ $set: { isAdmin: false, updatedAt: migrationTimestamp } },
+	);
+	await users.updateMany(
+		{ isOwner: { $exists: false } },
+		{ $set: { isOwner: false, updatedAt: migrationTimestamp } },
+	);
+	await users.updateMany(
+		{
+			$and: [{ isAdmin: { $not: { $type: "bool" } } }, { isAdmin: { $exists: true } }],
+		},
+		{ $set: { isAdmin: false, updatedAt: migrationTimestamp } },
+	);
+	await users.updateMany(
+		{
+			$and: [{ isOwner: { $not: { $type: "bool" } } }, { isOwner: { $exists: true } }],
+		},
+		{ $set: { isOwner: false, updatedAt: migrationTimestamp } },
+	);
+	await users.updateMany(
+		{ roles: { $exists: false } },
+		{ $set: { roles: [DEFAULT_USER_ROLE], updatedAt: migrationTimestamp } },
+	);
+
+	await users.updateMany({ roles: { $type: "array" } }, [
+		{
+			$set: {
+				roles: {
+					$let: {
+						vars: {
+							filteredRoles: {
+								$filter: {
+									input: "$roles",
+									as: "role",
+									cond: { $in: ["$$role", [...USER_ROLES]] },
+								},
+							},
+						},
+						in: {
+							$cond: [
+								{ $gt: [{ $size: "$$filteredRoles" }, 0] },
+								{ $setUnion: ["$$filteredRoles", []] },
+								[DEFAULT_USER_ROLE],
+							],
+						},
+					},
+				},
+			},
+		},
+	]);
+
+	await users.updateMany(
+		{
+			$and: [{ roles: { $not: { $type: "array" } } }, { roles: { $exists: true } }],
+		},
+		{ $set: { roles: [DEFAULT_USER_ROLE], updatedAt: migrationTimestamp } },
+	);
+
 	await users.createIndex({ emailLower: 1 }, { unique: true, name: "users_email_unique" });
+	await users.createIndex({ roles: 1 }, { name: "users_roles_idx" });
 	await sessions.createIndex({ userId: 1 }, { name: "sessions_user_id_idx" });
 	await sessions.createIndex(
 		{ expiresAt: 1 },
@@ -551,6 +668,9 @@ async function createUser(payload: SignupPayload): Promise<WithId<UserDocument>>
 		emailLower: normalizeEmail(payload.email),
 		fullName: payload.fullName.trim(),
 		company: payload.company.trim(),
+		isAdmin: false,
+		isOwner: false,
+		roles: [DEFAULT_USER_ROLE],
 		passwordHash,
 		createdAt: now,
 		updatedAt: now,

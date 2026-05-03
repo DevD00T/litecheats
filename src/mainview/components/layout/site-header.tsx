@@ -160,9 +160,21 @@ export function SiteHeader({ themeMode, onToggleTheme }: SiteHeaderProps) {
 				</nav>
 				<div className="flex items-center gap-2">
 					{status === "authenticated" ? (
-						<span className="hidden max-w-[180px] truncate text-xs text-muted-foreground md:inline">
-							{user?.email}
-						</span>
+						<>
+							<span className="hidden max-w-[180px] truncate text-xs text-muted-foreground md:inline">
+								{user?.email}
+							</span>
+							{user?.isAdmin ? (
+								<span className="hidden rounded-md border border-primary/35 bg-primary/10 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-primary md:inline">
+									Admin Access
+								</span>
+							) : null}
+							{user?.isOwner ? (
+								<span className="hidden rounded-md border border-primary/35 bg-primary/10 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-primary md:inline">
+									Owner Access
+								</span>
+							) : null}
+						</>
 					) : null}
 					<button
 						type="button"
