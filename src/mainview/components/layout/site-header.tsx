@@ -40,15 +40,20 @@ export function SiteHeader({ themeMode, onToggleTheme }: SiteHeaderProps) {
 	const [isLoggingOut, setIsLoggingOut] = useState(false);
 
 	const navigation = useMemo(() => {
+		const hasPrivilegedAccess = Boolean(user?.isAdmin || user?.isOwner);
 		if (isAuthenticated) {
-			return [...baseNavigation, { to: "/account", label: "Account" }];
+			return [
+				...baseNavigation,
+				...(hasPrivilegedAccess ? [{ to: "/admin", label: "Admin" }] : []),
+				{ to: "/account", label: "Account" },
+			];
 		}
 		return [
 			...baseNavigation,
 			{ to: "/login", label: "Login" },
 			{ to: "/signup", label: "Sign Up" },
 		];
-	}, [isAuthenticated]);
+	}, [isAuthenticated, user]);
 
 	useEffect(() => {
 		if (!pathname) return;

@@ -4,6 +4,7 @@ import { SiteHeader } from "@/components/layout/site-header";
 import { Toaster } from "@/components/ui/sonner";
 import { AboutPage } from "@/pages/about-page";
 import { AccountPage } from "@/pages/account-page";
+import { AdminPage } from "@/pages/admin-page";
 import { ContactPage } from "@/pages/contact-page";
 import { HomePage } from "@/pages/home-page";
 import { LoginPage } from "@/pages/login-page";
@@ -64,6 +65,14 @@ function AnimatedRoutes() {
 						</ProtectedRoute>
 					}
 				/>
+				<Route
+					path="/admin"
+					element={
+						<PrivilegedRoute>
+							<AdminPage />
+						</PrivilegedRoute>
+					}
+				/>
 				<Route path="*" element={<Navigate to="/" replace />} />
 			</Routes>
 		</AnimatePresence>
@@ -96,6 +105,24 @@ function GuestOnlyRoute({ children }: { children: ReactNode }) {
 
 	if (status === "loading") return <AuthBootScreen />;
 	if (isAuthenticated) return <Navigate to="/account" replace />;
+
+	return <>{children}</>;
+}
+
+function PrivilegedRoute({ children }: { children: ReactNode }) {
+	const { status, isAuthenticated, user } = useAuth();
+	const location = useLocation();
+
+	if (status === "loading") return <AuthBootScreen />;
+	if (!isAuthenticated) {
+		const redirect = encodeURIComponent(`${location.pathname}${location.search}`);
+		return <Navigate to={`/login?redirect=${redirect}`} replace />;
+	}
+
+	const hasPrivilegedAccess = Boolean(user?.isAdmin || user?.isOwner);
+	if (!hasPrivilegedAccess) {
+		return <Navigate to="/account" replace />;
+	}
 
 	return <>{children}</>;
 }

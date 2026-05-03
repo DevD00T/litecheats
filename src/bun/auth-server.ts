@@ -9,10 +9,16 @@ import {
 	type WithId,
 } from "mongodb";
 import {
+	AUTH_ADMIN_BASE_PATH,
 	AUTH_API_PORT,
 	AUTH_BASE_PATH,
 	AUTH_COOKIE_MAX_AGE_SECONDS,
 	AUTH_COOKIE_NAME,
+	type AdminCreateUserPayload,
+	type AdminDeleteUserResponse,
+	type AdminUpdateUserPayload,
+	type AdminUserListResponse,
+	type AdminUserListStats,
 	type ApiErrorResponse,
 	type AuthSuccessResponse,
 	type AuthUser,
@@ -37,6 +43,7 @@ import {
 const DEFAULT_MONGODB_URI = "mongodb://127.0.0.1:27017";
 const DEFAULT_MONGODB_DB_NAME = "litecheats";
 const ONE_DAY_MS = AUTH_COOKIE_MAX_AGE_SECONDS * 1000;
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const mongoClient = new MongoClient(Bun.env.MONGODB_URI ?? DEFAULT_MONGODB_URI);
 const mongoDbName = Bun.env.MONGODB_DB_NAME ?? DEFAULT_MONGODB_DB_NAME;
@@ -105,6 +112,18 @@ function createUuidV7(): string {
 
 function normalizeEmail(email: string): string {
 	return email.trim().toLowerCase();
+}
+
+function assertValidEmail(email: string): void {
+	if (!EMAIL_PATTERN.test(email)) {
+		throw new HttpError(400, "Please provide a valid email address.");
+	}
+}
+
+function assertStrongPassword(password: string): void {
+	if (password.length < 8) {
+		throw new HttpError(400, "Password must be at least 8 characters long.");
+	}
 }
 
 function sanitizeRoleFlag(value: unknown): boolean {
@@ -263,13 +282,8 @@ function parseSignupPayload(payload: unknown): SignupPayload {
 		throw new HttpError(400, "All signup fields are required.");
 	}
 
-	if (password.length < 8) {
-		throw new HttpError(400, "Password must be at least 8 characters long.");
-	}
-
-	if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-		throw new HttpError(400, "Please provide a valid email address.");
-	}
+	assertStrongPassword(password);
+	assertValidEmail(email);
 
 	return { fullName, email, company, password };
 }
@@ -304,6 +318,112 @@ function parseUpdatePayload(payload: unknown): UpdateProfilePayload {
 	}
 
 	return { fullName, company };
+}
+
+function parseAdminCreateUserPayload(payload: unknown): AdminCreateUserPayload {
+	if (!payload || typeof payload !== "object") {
+		throw new HttpError(400, "Invalid admin create-user payload.");
+	}
+
+	const body = payload as Record<string, unknown>;
+	const id = typeof body.id === "string" ? body.id.trim() : undefined;
+	const fullName = String(body.fullName ?? "").trim();
+	const email = String(body.email ?? "").trim();
+	const company = String(body.company ?? "").trim();
+	const password = String(body.password ?? "");
+	const isAdmin = sanitizeRoleFlag(body.isAdmin);
+	const isOwner = sanitizeRoleFlag(body.isOwner);
+
+	if (id && id.length > 128) {
+		throw new HttpError(400, "User id must be 128 characters or fewer.");
+	}
+
+	if (!fullName || !email || !company || !password) {
+		throw new HttpError(400, "fullName, email, company, and password are required.");
+	}
+
+	assertValidEmail(email);
+	assertStrongPassword(password);
+
+	return {
+		id,
+		fullName,
+		email,
+		company,
+		password,
+		isAdmin,
+		isOwner,
+	};
+}
+
+function parseAdminUpdateUserPayload(payload: unknown): AdminUpdateUserPayload {
+	if (!payload || typeof payload !== "object") {
+		throw new HttpError(400, "Invalid admin update-user payload.");
+	}
+
+	const body = payload as Record<string, unknown>;
+	const hasOwn = (field: string) => Object.prototype.hasOwnProperty.call(body, field);
+
+	const patch: AdminUpdateUserPayload = {};
+
+	if (hasOwn("fullName")) {
+		if (typeof body.fullName !== "string" || !body.fullName.trim()) {
+			throw new HttpError(400, "fullName must be a non-empty string.");
+		}
+		patch.fullName = body.fullName.trim();
+	}
+
+	if (hasOwn("company")) {
+		if (typeof body.company !== "string" || !body.company.trim()) {
+			throw new HttpError(400, "company must be a non-empty string.");
+		}
+		patch.company = body.company.trim();
+	}
+
+	if (hasOwn("email")) {
+		if (typeof body.email !== "string" || !body.email.trim()) {
+			throw new HttpError(400, "email must be a non-empty string.");
+		}
+		const email = body.email.trim();
+		assertValidEmail(email);
+		patch.email = email;
+	}
+
+	if (hasOwn("password")) {
+		if (typeof body.password !== "string") {
+			throw new HttpError(400, "password must be a string.");
+		}
+		assertStrongPassword(body.password);
+		patch.password = body.password;
+	}
+
+	if (hasOwn("isAdmin")) {
+		if (typeof body.isAdmin !== "boolean") {
+			throw new HttpError(400, "isAdmin must be a boolean.");
+		}
+		patch.isAdmin = body.isAdmin;
+	}
+
+	if (hasOwn("isOwner")) {
+		if (typeof body.isOwner !== "boolean") {
+			throw new HttpError(400, "isOwner must be a boolean.");
+		}
+		patch.isOwner = body.isOwner;
+	}
+
+	if (!Object.keys(patch).length) {
+		throw new HttpError(400, "At least one update field is required.");
+	}
+
+	return patch;
+}
+
+function hasPrivilegedAccess(user: WithId<UserDocument>): boolean {
+	return sanitizeRoleFlag(user.isAdmin) || sanitizeRoleFlag(user.isOwner);
+}
+
+function hasOwnerAccess(user: WithId<UserDocument>): boolean {
+	return sanitizeRoleFlag(user.isOwner);
 }
 
 async function readRequestJson(request: Request): Promise<unknown> {
@@ -776,6 +896,176 @@ async function deleteUser(userId: string): Promise<void> {
 	await deleteSessionsByUserId(userId);
 }
 
+async function requirePrivilegedSession(
+	request: Request,
+): Promise<{ user: WithId<UserDocument>; sessionId: string }> {
+	const session = await resolveSessionUser(request);
+	if (!session) {
+		throw new HttpError(401, "Unauthorized.");
+	}
+
+	if (!hasPrivilegedAccess(session.user)) {
+		throw new HttpError(403, "Admin or owner access required.");
+	}
+
+	return session;
+}
+
+async function listAdminUsers(): Promise<AdminUserListResponse> {
+	const db = await getDb();
+	const users = db.collection<UserDocument>("users");
+
+	const userDocs = await users
+		.find(
+			{},
+			{
+				projection: {
+					_id: 1,
+					email: 1,
+					fullName: 1,
+					company: 1,
+					roles: 1,
+					isAdmin: 1,
+					isOwner: 1,
+					createdAt: 1,
+					updatedAt: 1,
+				},
+			},
+		)
+		.sort({ createdAt: -1 })
+		.toArray();
+
+	const mappedUsers = userDocs.map((user) => toAuthUser(user as WithId<UserDocument>));
+	const stats: AdminUserListStats = {
+		totalUsers: mappedUsers.length,
+		adminUsers: mappedUsers.filter((user) => user.isAdmin).length,
+		ownerUsers: mappedUsers.filter((user) => user.isOwner).length,
+	};
+
+	return {
+		users: mappedUsers,
+		stats,
+	};
+}
+
+async function createUserByAdmin(payload: AdminCreateUserPayload): Promise<WithId<UserDocument>> {
+	const db = await getDb();
+	const users = db.collection<UserDocument>("users");
+
+	const now = new Date();
+	const passwordHash = await Bun.password.hash(payload.password);
+	const userId = payload.id?.trim() || createUuidV7();
+
+	const user: UserDocument = {
+		_id: userId,
+		email: payload.email.trim(),
+		emailLower: normalizeEmail(payload.email),
+		fullName: payload.fullName.trim(),
+		company: payload.company.trim(),
+		isAdmin: payload.isAdmin ?? false,
+		isOwner: payload.isOwner ?? false,
+		roles: [DEFAULT_USER_ROLE],
+		passwordHash,
+		createdAt: now,
+		updatedAt: now,
+	};
+
+	try {
+		await users.insertOne(user);
+	} catch (error) {
+		if (error instanceof MongoServerError && error.code === 11000) {
+			const keyPattern = error.keyPattern ? Object.keys(error.keyPattern)[0] : "";
+			if (keyPattern === "_id") {
+				throw new HttpError(409, "A user with this id already exists.");
+			}
+			throw new HttpError(409, "A user with this email already exists.");
+		}
+		throw error;
+	}
+
+	return user;
+}
+
+async function updateUserByAdmin(
+	actor: WithId<UserDocument>,
+	targetUserId: string,
+	payload: AdminUpdateUserPayload,
+): Promise<WithId<UserDocument>> {
+	const db = await getDb();
+	const users = db.collection<UserDocument>("users");
+
+	const target = await users.findOne({ _id: targetUserId });
+	if (!target) {
+		throw new HttpError(404, "User not found.");
+	}
+
+	if (sanitizeRoleFlag(target.isOwner) && !hasOwnerAccess(actor) && actor._id !== targetUserId) {
+		throw new HttpError(403, "Only owners can modify another owner account.");
+	}
+
+	if (payload.isOwner === true && !hasOwnerAccess(actor)) {
+		throw new HttpError(403, "Only owners can assign owner role.");
+	}
+
+	const nextIsOwner = payload.isOwner ?? sanitizeRoleFlag(target.isOwner);
+	const nextIsAdmin = payload.isAdmin ?? sanitizeRoleFlag(target.isAdmin);
+
+	if (actor._id === targetUserId && !nextIsAdmin && !nextIsOwner) {
+		throw new HttpError(400, "You cannot remove your own privileged access.");
+	}
+
+	const patch: Partial<UserDocument> = {
+		updatedAt: new Date(),
+	};
+
+	if (typeof payload.fullName === "string") patch.fullName = payload.fullName.trim();
+	if (typeof payload.company === "string") patch.company = payload.company.trim();
+	if (typeof payload.email === "string") {
+		patch.email = payload.email.trim();
+		patch.emailLower = normalizeEmail(payload.email);
+	}
+	if (typeof payload.isAdmin === "boolean") patch.isAdmin = payload.isAdmin;
+	if (typeof payload.isOwner === "boolean") patch.isOwner = payload.isOwner;
+	if (typeof payload.password === "string") {
+		patch.passwordHash = await Bun.password.hash(payload.password);
+	}
+
+	try {
+		await users.updateOne({ _id: targetUserId }, { $set: patch });
+	} catch (error) {
+		if (error instanceof MongoServerError && error.code === 11000) {
+			throw new HttpError(409, "A user with this email already exists.");
+		}
+		throw error;
+	}
+
+	const updated = await users.findOne({ _id: targetUserId });
+	if (!updated) {
+		throw new HttpError(404, "User not found.");
+	}
+	return updated;
+}
+
+async function deleteUserByAdmin(actor: WithId<UserDocument>, targetUserId: string): Promise<void> {
+	const db = await getDb();
+	const users = db.collection<UserDocument>("users");
+	const target = await users.findOne({ _id: targetUserId });
+
+	if (!target) {
+		throw new HttpError(404, "User not found.");
+	}
+
+	if (sanitizeRoleFlag(target.isOwner) && !hasOwnerAccess(actor)) {
+		throw new HttpError(403, "Only owners can delete owner accounts.");
+	}
+
+	if (actor._id === targetUserId) {
+		throw new HttpError(400, "You cannot delete your own account from admin panel.");
+	}
+
+	await deleteUser(targetUserId);
+}
+
 function buildAuthSuccessResponse(user: WithId<UserDocument>): AuthSuccessResponse {
 	return { user: toAuthUser(user) };
 }
@@ -867,6 +1157,38 @@ async function handleDeleteMe(request: Request): Promise<Response> {
 	});
 }
 
+async function handleAdminListUsers(request: Request): Promise<Response> {
+	await requirePrivilegedSession(request);
+	const response = await listAdminUsers();
+	return jsonResponse(request, 200, response);
+}
+
+async function handleAdminCreateUser(request: Request): Promise<Response> {
+	const adminSession = await requirePrivilegedSession(request);
+	const payload = parseAdminCreateUserPayload(await readRequestJson(request));
+
+	if (payload.isOwner && !hasOwnerAccess(adminSession.user)) {
+		throw new HttpError(403, "Only owners can create owner accounts.");
+	}
+
+	const created = await createUserByAdmin(payload);
+	return jsonResponse(request, 201, buildAuthSuccessResponse(created));
+}
+
+async function handleAdminUpdateUser(request: Request, userId: string): Promise<Response> {
+	const adminSession = await requirePrivilegedSession(request);
+	const payload = parseAdminUpdateUserPayload(await readRequestJson(request));
+	const updated = await updateUserByAdmin(adminSession.user, userId, payload);
+	return jsonResponse(request, 200, buildAuthSuccessResponse(updated));
+}
+
+async function handleAdminDeleteUser(request: Request, userId: string): Promise<Response> {
+	const adminSession = await requirePrivilegedSession(request);
+	await deleteUserByAdmin(adminSession.user, userId);
+	const response: AdminDeleteUserResponse = { deleted: true };
+	return jsonResponse(request, 200, response);
+}
+
 async function handleReleasesFeed(request: Request): Promise<Response> {
 	const feed = await buildReleaseFeed();
 	return jsonResponse(request, 200, feed);
@@ -928,6 +1250,32 @@ async function routeRequest(request: Request): Promise<Response> {
 
 	if (!url.pathname.startsWith(AUTH_BASE_PATH)) {
 		return jsonResponse(request, 404, buildErrorResponse("Not Found"));
+	}
+
+	if (request.method === "GET" && url.pathname === `${AUTH_ADMIN_BASE_PATH}/users`) {
+		return handleAdminListUsers(request);
+	}
+
+	if (request.method === "POST" && url.pathname === `${AUTH_ADMIN_BASE_PATH}/users`) {
+		return handleAdminCreateUser(request);
+	}
+
+	const adminUserMatch = url.pathname.match(new RegExp(`^${AUTH_ADMIN_BASE_PATH}/users/([^/]+)$`));
+
+	if (adminUserMatch && request.method === "PATCH") {
+		const userId = decodeURIComponent(adminUserMatch[1] ?? "");
+		if (!userId) {
+			throw new HttpError(400, "User id is required.");
+		}
+		return handleAdminUpdateUser(request, userId);
+	}
+
+	if (adminUserMatch && request.method === "DELETE") {
+		const userId = decodeURIComponent(adminUserMatch[1] ?? "");
+		if (!userId) {
+			throw new HttpError(400, "User id is required.");
+		}
+		return handleAdminDeleteUser(request, userId);
 	}
 
 	if (request.method === "POST" && url.pathname === `${AUTH_BASE_PATH}/signup`) {

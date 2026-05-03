@@ -1,5 +1,6 @@
 export const AUTH_API_PORT = 8787;
 export const AUTH_BASE_PATH = "/login";
+export const AUTH_ADMIN_BASE_PATH = `${AUTH_BASE_PATH}/admin`;
 export const AUTH_COOKIE_NAME = "litecheats_session";
 export const AUTH_COOKIE_MAX_AGE_SECONDS = 86400;
 
@@ -47,4 +48,38 @@ export interface AuthSuccessResponse {
 
 export interface ApiErrorResponse {
 	error: string;
+}
+
+export interface AdminUserListStats {
+	totalUsers: number;
+	adminUsers: number;
+	ownerUsers: number;
+}
+
+export interface AdminUserListResponse {
+	users: AuthUser[];
+	stats: AdminUserListStats;
+}
+
+export interface AdminCreateUserPayload {
+	id?: string;
+	email: string;
+	password: string;
+	fullName: string;
+	company: string;
+	isAdmin?: boolean;
+	isOwner?: boolean;
+}
+
+export interface AdminUpdateUserPayload {
+	email?: string;
+	password?: string;
+	fullName?: string;
+	company?: string;
+	isAdmin?: boolean;
+	isOwner?: boolean;
+}
+
+export interface AdminDeleteUserResponse {
+	deleted: true;
 }

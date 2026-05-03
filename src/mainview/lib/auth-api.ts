@@ -1,6 +1,10 @@
 import {
 	AUTH_API_PORT,
 	AUTH_BASE_PATH,
+	type AdminCreateUserPayload,
+	type AdminDeleteUserResponse,
+	type AdminUpdateUserPayload,
+	type AdminUserListResponse,
 	type ApiErrorResponse,
 	type AuthSuccessResponse,
 	type LoginPayload,
@@ -93,6 +97,24 @@ export const authApi = {
 		}),
 	deleteMe: () =>
 		authRequest<null>("/me", {
+			method: "DELETE",
+		}),
+	getAdminUsers: () =>
+		authRequest<AdminUserListResponse>("/admin/users", {
+			method: "GET",
+		}),
+	createAdminUser: (payload: AdminCreateUserPayload) =>
+		authRequest<AuthSuccessResponse>("/admin/users", {
+			method: "POST",
+			body: JSON.stringify(payload),
+		}),
+	updateAdminUser: (userId: string, payload: AdminUpdateUserPayload) =>
+		authRequest<AuthSuccessResponse>(`/admin/users/${encodeURIComponent(userId)}`, {
+			method: "PATCH",
+			body: JSON.stringify(payload),
+		}),
+	deleteAdminUser: (userId: string) =>
+		authRequest<AdminDeleteUserResponse>(`/admin/users/${encodeURIComponent(userId)}`, {
 			method: "DELETE",
 		}),
 };
