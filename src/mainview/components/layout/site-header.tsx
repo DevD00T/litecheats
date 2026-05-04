@@ -168,13 +168,6 @@ export function SiteHeader({ themeMode, onToggleTheme }: SiteHeaderProps) {
 					))}
 				</nav>
 				<div className="flex items-center gap-2">
-					{status === "authenticated" ? (
-						<>
-							<span className="hidden max-w-[180px] truncate text-xs text-muted-foreground md:inline">
-								{user?.email}
-							</span>
-						</>
-					) : null}
 					<button
 						type="button"
 						onClick={onToggleTheme}
