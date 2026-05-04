@@ -1,5 +1,9 @@
 import type { ElectrobunConfig } from "electrobun/bun";
 
+const envArg =
+	process.argv.find((arg) => arg.startsWith("--env="))?.split("=")[1] ?? "dev";
+const bundleCEFForDistribution = envArg !== "dev";
+
 export default {
 	app: {
 		name: "Litecheats",
@@ -19,16 +23,20 @@ export default {
 		},
 		watchIgnore: ["dist/**"],
 		mac: {
-			codesign: false,
-			notarize: false,
-			bundleCEF: false,
-			entitlements: {},
+			codesign: true,
+			notarize: true,
+			bundleCEF: bundleCEFForDistribution,
+			entitlements: {
+				"com.apple.security.cs.allow-jit": true,
+				"com.apple.security.cs.allow-unsigned-executable-memory": true,
+				"com.apple.security.cs.disable-library-validation": true,
+			},
 		},
 		linux: {
-			bundleCEF: false,
+			bundleCEF: bundleCEFForDistribution,
 		},
 		win: {
-			bundleCEF: false,
+			bundleCEF: bundleCEFForDistribution,
 		},
 	},
 	release: {

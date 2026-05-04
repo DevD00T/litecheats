@@ -1,5 +1,9 @@
 import type { ElectrobunConfig } from "electrobun";
 
+const envArg =
+  process.argv.find((arg) => arg.startsWith("--env="))?.split("=")[1] ?? "dev";
+const bundleCEFForDistribution = envArg !== "dev";
+
 export default {
   app: {
     name: "Litecheats",
@@ -17,13 +21,20 @@ export default {
   "src/mainview/index.css": "views/mainview/index.css"
 },
     mac: {
-      bundleCEF: false,
+      codesign: true,
+      notarize: true,
+      bundleCEF: bundleCEFForDistribution,
+      entitlements: {
+        "com.apple.security.cs.allow-jit": true,
+        "com.apple.security.cs.allow-unsigned-executable-memory": true,
+        "com.apple.security.cs.disable-library-validation": true
+      },
     },
     win: {
-      bundleCEF: false,
+      bundleCEF: bundleCEFForDistribution,
     },
     linux: {
-      bundleCEF: false,
+      bundleCEF: bundleCEFForDistribution,
     },
   },
 } satisfies ElectrobunConfig;
