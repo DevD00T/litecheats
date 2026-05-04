@@ -119,6 +119,7 @@ The backend can run a Telegram bot using [GramIO](https://gramio.dev).
 BOT_TOKEN=1234567890:your_telegram_bot_token
 TELEGRAM_BOT_ENABLED=true
 TELEGRAM_ADMIN_USERNAMES=your_telegram_username
+LITECHEATS_STATUS_BASE_URL=https://litecheats.com
 TELEGRAM_WEBHOOK_PATH=/telegram-webhook
 TELEGRAM_WEBHOOK_BASE_URL=https://litecheats.com
 TELEGRAM_WEBHOOK_SECRET_TOKEN=replace_with_random_secret
@@ -136,10 +137,16 @@ Bot commands included:
 - `/help`
 - `/admins`
 - `/admins add @username`
+- `/status`
 
 `TELEGRAM_ADMIN_USERNAMES` is a comma-separated bootstrap list. Those usernames are
 seeded into MongoDB as Telegram owners, and Telegram admins can then add more
 Telegram admins with `/admins add @username`.
+
+`/status` is admin-only and checks Telegram bot connectivity, Telegram webhook
+registration, the configured webhook path, and Litecheats HTTP/API reachability.
+Set `LITECHEATS_STATUS_BASE_URL` if the status checks should target a different
+public base URL.
 
 Webhook behavior:
 
