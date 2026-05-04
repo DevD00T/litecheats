@@ -1,6 +1,9 @@
 import { Bot, bold, format, link, webhookHandler } from "gramio";
+import type { Collection, Document, WithId } from "mongodb";
+import { getAuthDb } from "./auth-server";
 
 const TELEGRAM_WEBHOOK_PATH_DEFAULT = "/telegram-webhook";
+const TELEGRAM_USERNAME_PATTERN = /^[a-zA-Z0-9_]{5,32}$/;
 const TELEGRAM_BOT_ENABLED_FLAG = Bun.env.TELEGRAM_BOT_ENABLED?.trim().toLowerCase();
 const TELEGRAM_BOT_ENABLED =
 	TELEGRAM_BOT_ENABLED_FLAG === undefined ||
@@ -16,12 +19,40 @@ const TELEGRAM_WEBHOOK_SECRET_TOKEN = Bun.env.TELEGRAM_WEBHOOK_SECRET_TOKEN?.tri
 const TELEGRAM_DEV_WEBHOOK_TUNNEL =
 	Bun.env.TELEGRAM_DEV_WEBHOOK_TUNNEL === "1" || Bun.env.TELEGRAM_DEV_WEBHOOK_TUNNEL === "true";
 const TELEGRAM_DEV_WEBHOOK_TUNNEL_PORT = Number(Bun.env.TELEGRAM_DEV_WEBHOOK_TUNNEL_PORT ?? 8080);
+const TELEGRAM_ADMIN_USERNAMES = (Bun.env.TELEGRAM_ADMIN_USERNAMES ?? "")
+	.split(",")
+	.map((username) => normalizeTelegramUsername(username))
+	.filter((username): username is string => Boolean(username));
 
 interface TelegramBotStartOptions {
 	localPort?: number;
 }
 
 type TelegramWebhookRequestHandler = (request: Request) => Promise<Response> | Response;
+type TelegramRole = "admin" | "owner";
+
+interface TelegramAdminDocument extends Document {
+	_id: string;
+	username: string;
+	usernameLower: string;
+	role: TelegramRole;
+	addedByTelegramId: number | null;
+	addedByUsername: string | null;
+	createdAt: Date;
+	updatedAt: Date;
+}
+
+interface TelegramUserLike {
+	id?: number;
+	firstName?: string;
+	username?: string;
+}
+
+interface TelegramCommandContext {
+	args: string | null;
+	from?: TelegramUserLike;
+	send(message: unknown): unknown;
+}
 
 let bot: Bot | null = null;
 let webhookRequestHandler: TelegramWebhookRequestHandler | null = null;
@@ -41,6 +72,155 @@ const TELEGRAM_WEBHOOK_PATH = normalizeWebhookPath(
 function getBotToken(): string | null {
 	const token = Bun.env.BOT_TOKEN?.trim();
 	return token ? token : null;
+}
+
+function normalizeTelegramUsername(value: string): string | null {
+	const normalized = value.trim().replace(/^@/, "");
+	if (!TELEGRAM_USERNAME_PATTERN.test(normalized)) return null;
+	return normalized;
+}
+
+function getTelegramUsernameLower(value: string): string {
+	return value.toLowerCase();
+}
+
+async function getTelegramAdminsCollection(): Promise<Collection<TelegramAdminDocument>> {
+	const db = await getAuthDb();
+	return db.collection<TelegramAdminDocument>("telegram_admins");
+}
+
+async function seedTelegramAdmins(): Promise<void> {
+	if (!TELEGRAM_ADMIN_USERNAMES.length) return;
+
+	const admins = await getTelegramAdminsCollection();
+	const now = new Date();
+
+	await Promise.all(
+		TELEGRAM_ADMIN_USERNAMES.map((username) =>
+			admins.updateOne(
+				{ usernameLower: getTelegramUsernameLower(username) },
+				{
+					$setOnInsert: {
+						_id: crypto.randomUUID(),
+						username,
+						usernameLower: getTelegramUsernameLower(username),
+						role: "owner",
+						addedByTelegramId: null,
+						addedByUsername: "env",
+						createdAt: now,
+					},
+					$set: {
+						updatedAt: now,
+					},
+				},
+				{ upsert: true },
+			),
+		),
+	);
+}
+
+async function findTelegramAdminByUsername(
+	username: string | undefined,
+): Promise<WithId<TelegramAdminDocument> | null> {
+	const normalized = username ? normalizeTelegramUsername(username) : null;
+	if (!normalized) return null;
+
+	const admins = await getTelegramAdminsCollection();
+	return admins.findOne({ usernameLower: getTelegramUsernameLower(normalized) });
+}
+
+async function hasTelegramAdminAccess(from: TelegramUserLike | undefined): Promise<boolean> {
+	await seedTelegramAdmins();
+	return Boolean(await findTelegramAdminByUsername(from?.username));
+}
+
+async function listTelegramAdmins(): Promise<WithId<TelegramAdminDocument>[]> {
+	await seedTelegramAdmins();
+	const admins = await getTelegramAdminsCollection();
+	return admins.find().sort({ role: -1, usernameLower: 1 }).toArray();
+}
+
+async function addTelegramAdmin(
+	username: string,
+	addedBy: TelegramUserLike | undefined,
+): Promise<{ admin: WithId<TelegramAdminDocument>; created: boolean }> {
+	const normalized = normalizeTelegramUsername(username);
+	if (!normalized) {
+		throw new Error("Send a valid Telegram username, for example /admins add @username.");
+	}
+
+	const admins = await getTelegramAdminsCollection();
+	const now = new Date();
+	const usernameLower = getTelegramUsernameLower(normalized);
+	const existing = await admins.findOneAndUpdate(
+		{ usernameLower },
+		{
+			$setOnInsert: {
+				_id: crypto.randomUUID(),
+				username: normalized,
+				usernameLower,
+				role: "admin",
+				addedByTelegramId: addedBy?.id ?? null,
+				addedByUsername: addedBy?.username ?? null,
+				createdAt: now,
+			},
+			$set: {
+				updatedAt: now,
+			},
+		},
+		{ upsert: true, returnDocument: "before" },
+	);
+
+	if (existing) {
+		return { admin: existing, created: false };
+	}
+
+	const admin = await admins.findOne({ usernameLower });
+	if (!admin) {
+		throw new Error("Telegram admin was not saved. Please try again.");
+	}
+
+	return { admin, created: true };
+}
+
+async function handleAdminsCommand(ctx: TelegramCommandContext): Promise<unknown> {
+	const hasAccess = await hasTelegramAdminAccess(ctx.from);
+	if (!hasAccess) {
+		return ctx.send(
+			"Telegram admin access required. Ask an existing Telegram admin to add your @username.",
+		);
+	}
+
+	const args = (ctx.args ?? "").trim();
+	const [action, username] = args.split(/\s+/);
+
+	if (action === "add") {
+		try {
+			const result = await addTelegramAdmin(username ?? "", ctx.from);
+			const prefix = result.created ? "Added" : "Already added";
+			return ctx.send(`${prefix} @${result.admin.username} as Telegram admin.`);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "Unable to add Telegram admin.";
+			return ctx.send(message);
+		}
+	}
+
+	if (args.length > 0) {
+		return ctx.send(
+			["Usage:", "/admins - List Telegram admins", "/admins add @username - Add an admin"].join(
+				"\n",
+			),
+		);
+	}
+
+	const admins = await listTelegramAdmins();
+	if (!admins.length) {
+		return ctx.send("No Telegram admins are configured.");
+	}
+
+	return ctx.send(
+		["Telegram admins:", ...admins.map((admin) => `@${admin.username} - ${admin.role}`)].join("\n"),
+	);
 }
 
 function toWebhookUrl(baseUrl: string, path: string): string {
@@ -97,9 +277,12 @@ Welcome to ${link("Litecheats Technologies", "https://litecheats.com")}.`,
 					"Litecheats Bot Commands:",
 					"/start - Start chat and view intro message",
 					"/help - Show available commands",
+					"/admins - List Telegram admins",
+					"/admins add @username - Add a Telegram admin",
 				].join("\n"),
 			),
 		)
+		.command("admins", (ctx) => handleAdminsCommand(ctx))
 		.onError(({ kind, error }) => {
 			console.error(`[telegram:${kind}]`, error);
 		})

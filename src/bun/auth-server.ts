@@ -136,6 +136,17 @@ interface ReleaseArtifactDocument extends Document {
 	createdAt: Date;
 }
 
+interface TelegramAdminDocument extends Document {
+	_id: string;
+	username: string;
+	usernameLower: string;
+	role: "admin" | "owner";
+	addedByTelegramId: number | null;
+	addedByUsername: string | null;
+	createdAt: Date;
+	updatedAt: Date;
+}
+
 class HttpError extends Error {
 	status: number;
 
@@ -754,10 +765,40 @@ async function ensureMongoSchema(db: Db): Promise<void> {
 		},
 	});
 
+	await ensureCollection(db, "telegram_admins", {
+		$jsonSchema: {
+			bsonType: "object",
+			required: [
+				"_id",
+				"username",
+				"usernameLower",
+				"role",
+				"addedByTelegramId",
+				"addedByUsername",
+				"createdAt",
+				"updatedAt",
+			],
+			properties: {
+				_id: { bsonType: "string" },
+				username: { bsonType: "string" },
+				usernameLower: { bsonType: "string" },
+				role: {
+					bsonType: "string",
+					enum: ["admin", "owner"],
+				},
+				addedByTelegramId: { bsonType: ["long", "int", "double", "null"] },
+				addedByUsername: { bsonType: ["string", "null"] },
+				createdAt: { bsonType: "date" },
+				updatedAt: { bsonType: "date" },
+			},
+		},
+	});
+
 	const users = db.collection<UserDocument>("users");
 	const sessions = db.collection<SessionDocument>("sessions");
 	const releaseVersions = db.collection<ReleaseVersionDocument>("release_versions");
 	const releaseArtifacts = db.collection<ReleaseArtifactDocument>("release_artifacts");
+	const telegramAdmins = db.collection<TelegramAdminDocument>("telegram_admins");
 
 	const migrationTimestamp = new Date();
 	await users.updateMany(
@@ -859,6 +900,10 @@ async function ensureMongoSchema(db: Db): Promise<void> {
 		{ version: 1, platform: 1, format: 1, target: 1 },
 		{ name: "release_artifacts_lookup_idx" },
 	);
+	await telegramAdmins.createIndex(
+		{ usernameLower: 1 },
+		{ unique: true, name: "telegram_admins_username_unique" },
+	);
 }
 
 async function getDb(): Promise<Db> {
@@ -877,6 +922,10 @@ async function getDb(): Promise<Db> {
 	}
 
 	return dbPromise;
+}
+
+export async function getAuthDb(): Promise<Db> {
+	return getDb();
 }
 
 function toReleaseArtifactSummary(
