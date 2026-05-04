@@ -134,8 +134,8 @@ export function DownloadsPage() {
 						Download Litecheats for macOS, Windows, and Linux.
 					</h1>
 					<p className="mt-3 max-w-3xl text-sm leading-relaxed text-muted-foreground md:text-base">
-						Release installers are published to MongoDB and served directly by the Bun backend. Use
-						the latest platform package below.
+						Production-ready desktop builds are available here. Choose the latest package for your
+						platform to install or upgrade.
 					</p>
 				</div>
 

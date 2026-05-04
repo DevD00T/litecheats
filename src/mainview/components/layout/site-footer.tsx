@@ -24,6 +24,9 @@ export function SiteFooter() {
 						<Link className="transition-colors hover:text-primary" to="/contact">
 							Contact
 						</Link>
+						<Link className="transition-colors hover:text-primary" to="/downloads">
+							Downloads
+						</Link>
 						<Link className="transition-colors hover:text-primary" to="/privacy-policy">
 							Privacy Policy
 						</Link>

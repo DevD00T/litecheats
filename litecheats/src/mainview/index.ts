@@ -1,9 +1,9 @@
 const APP_CONFIG = {
   "name": "Litecheats",
   "title": "Litecheats",
-  "origin": "https://litecheats.com",
-  "url": "https://litecheats.com/",
-  "themeColor": "#245ebc",
+  "origin": "http://localhost:5173",
+  "url": "http://localhost:5173/",
+  "themeColor": "#bc246e",
   "titlebar": "unified",
   "showOrigin": true,
   "hasIcon": false
@@ -40,4 +40,4 @@ siteIcon?.addEventListener("error", () => {
   siteIcon.remove();
 });
 
-console.log("Loading https://litecheats.com/");
+console.log("Loading http://localhost:5173/");

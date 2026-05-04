@@ -2,7 +2,7 @@
   "name": "litecheats",
   "version": "0.1.0",
   "private": true,
-  "description": "Desktop wrapper for litecheats.com",
+  "description": "Desktop wrapper for localhost",
   "scripts": {
     "start": "electrobun dev",
     "dev": "electrobun dev --watch",

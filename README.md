@@ -181,10 +181,32 @@ The app exposes a release feed and artifact download API backed by MongoDB:
 `appbun` is installed as a dev dependency and can scaffold a desktop wrapper project from a URL:
 
 ```bash
-APPBUN_URL=http://localhost:5173 bun run appbun:create
+bun run appbun:create
 ```
 
-This creates `./desktop/litecheats` as an inspectable Electrobun-based wrapper project.
+This creates `./litecheats` as an inspectable Electrobun-based wrapper project.
+
+Generate a DMG directly (same shape as your command):
+
+```bash
+bun run appbun:dmg
+```
+
+HMR wrapper target (local Vite URL):
+
+```bash
+APPBUN_URL=http://localhost:5173 bun run appbun:hmr:create
+```
+
+Then run wrapper + Vite together with hot reload:
+
+```bash
+bun run appbun:hmr:run
+```
+
+`appbun:hmr:run` refreshes `./litecheats` against `http://localhost:5173` before starting,
+so the wrapper does not stay pinned to production URL during local HMR. If Vite is already
+running on that URL, it is reused.
 
 ### Development with file watching
 
@@ -280,6 +302,37 @@ bun run build:stable
 ```
 
 This generates the app bundle plus patch files for delta updates. Upload the build output to your `baseUrl` location. The app can check for and apply updates at runtime using the `Updater` API from `electrobun/bun`.
+
+### macOS DMG release publishing (MongoDB-backed downloads)
+
+The app includes a release publisher flow for macOS DMG artifacts:
+
+1. Build stable desktop app + create DMG + publish version metadata/artifact:
+
+```bash
+bun run release:macos --version v0.1.0 --notes "Initial macOS release"
+```
+
+2. Skip build and publish an existing DMG file:
+
+```bash
+bun run release:macos --version v0.1.1 --artifact ./build/dmg/Litecheats.dmg --skip-build
+```
+
+3. Low-level publisher command (any supported platform/format):
+
+```bash
+bun run publish:release --version v0.1.0 --artifact ./build/dmg/Litecheats.dmg --platform macos --format dmg --target universal --latest true
+```
+
+This stores the binary in GridFS (`release_artifacts` bucket), updates `release_versions`,
+and makes the file available through:
+
+- `GET /downloads/releases`
+- `GET /downloads/artifacts/:artifactId/file`
+
+Current rollout starts with macOS DMG. Windows/Linux artifacts can be published using the
+same publisher script once those build outputs are available.
 
 ### macOS code signing and notarization
 

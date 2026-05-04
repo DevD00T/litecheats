@@ -6,6 +6,7 @@ import { AboutPage } from "@/pages/about-page";
 import { AccountPage } from "@/pages/account-page";
 import { AdminPage } from "@/pages/admin-page";
 import { ContactPage } from "@/pages/contact-page";
+import { DownloadsPage } from "@/pages/downloads-page";
 import { HomePage } from "@/pages/home-page";
 import { LoginPage } from "@/pages/login-page";
 import { PrivacyPage } from "@/pages/privacy-page";
@@ -39,6 +40,7 @@ function AnimatedRoutes() {
 				<Route path="/" element={<HomePage />} />
 				<Route path="/about" element={<AboutPage />} />
 				<Route path="/contact" element={<ContactPage />} />
+				<Route path="/downloads" element={<DownloadsPage />} />
 				<Route path="/privacy-policy" element={<PrivacyPage />} />
 				<Route path="/terms" element={<TermsPage />} />
 				<Route

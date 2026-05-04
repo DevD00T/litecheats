@@ -23,5 +23,5 @@ mainWindow.webview.on("dom-ready", () => {
   console.log("Litecheats shell loaded")
 });
 
-console.log("appbun wrapper started for https://litecheats.com/");
-console.log("Description: Desktop wrapper for litecheats.com");
+console.log("appbun wrapper started for http://localhost:5173/");
+console.log("Description: Desktop wrapper for localhost");

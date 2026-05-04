@@ -3,7 +3,7 @@ import type { ElectrobunConfig } from "electrobun";
 export default {
   app: {
     name: "Litecheats",
-    identifier: "com.litecheats",
+    identifier: "localhost.litecheats",
     version: "0.1.0",
   },
   build: {
