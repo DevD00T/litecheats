@@ -6,6 +6,7 @@ import { AUTH_API_PORT, AUTH_BASE_PATH } from "../shared/auth";
 import { DOWNLOADS_BASE_PATH } from "../shared/releases";
 import { startAuthServer } from "../src/bun/auth-server";
 import {
+	getTelegramWebhookHealthHandler,
 	getTelegramWebhookPath,
 	getTelegramWebhookRouteHandler,
 	startTelegramBot,
@@ -133,12 +134,17 @@ if (await isPortInUse(VITE_SERVER_PORT, "localhost")) {
 await ensureAuthServerRunning();
 await startTelegramBot({ localPort: FULLSTACK_PORT });
 const telegramWebhookPath = getTelegramWebhookPath();
+const telegramWebhookHealthHandler = getTelegramWebhookHealthHandler();
 const telegramWebhookHandler = getTelegramWebhookRouteHandler();
 
 const app = new Elysia({ name: "litecheats-fullstack-dev" });
 
 if (telegramWebhookHandler) {
 	app.post(telegramWebhookPath, telegramWebhookHandler);
+}
+
+if (telegramWebhookHealthHandler) {
+	app.get(telegramWebhookPath, telegramWebhookHealthHandler);
 }
 
 app.onRequest(({ request }) => {

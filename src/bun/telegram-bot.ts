@@ -486,6 +486,21 @@ export function getTelegramWebhookRouteHandler():
 	return ({ request }) => webhookRequestHandler?.(request) ?? new Response("ok!");
 }
 
+export function getTelegramWebhookHealthHandler(): (() => Response) | null {
+	const currentBot = getOrCreateBot();
+	if (!currentBot || !webhookRequestHandler) return null;
+
+	return () =>
+		Response.json({
+			ok: true,
+			status: "ready",
+			path: TELEGRAM_WEBHOOK_PATH,
+			methods: ["GET", "POST"],
+			post: "Telegram webhook delivery endpoint",
+			get: "Webhook health check endpoint",
+		});
+}
+
 export async function startTelegramBot(options?: TelegramBotStartOptions): Promise<void> {
 	if (bootPromise) return bootPromise;
 

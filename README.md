@@ -148,6 +148,9 @@ registration, the configured webhook path, and Litecheats HTTP/API reachability.
 Set `LITECHEATS_STATUS_BASE_URL` if the status checks should target a different
 public base URL.
 
+The app exposes `GET ${TELEGRAM_WEBHOOK_PATH}` as a lightweight health check for
+`/status`. Telegram update delivery still uses `POST ${TELEGRAM_WEBHOOK_PATH}`.
+
 Webhook behavior:
 
 - In production (`NODE_ENV=production` or `node_env=production`), bot starts in webhook mode and registers:

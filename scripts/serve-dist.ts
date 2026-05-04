@@ -8,6 +8,7 @@ import { AUTH_API_PORT, AUTH_BASE_PATH } from "../shared/auth";
 import { DOWNLOADS_BASE_PATH } from "../shared/releases";
 import { startAuthServer } from "../src/bun/auth-server";
 import {
+	getTelegramWebhookHealthHandler,
 	getTelegramWebhookPath,
 	getTelegramWebhookRouteHandler,
 	startTelegramBot,
@@ -52,12 +53,17 @@ async function proxyAuthApi(request: Request): Promise<Response> {
 await ensureAuthServerRunning();
 await startTelegramBot({ localPort: port });
 const telegramWebhookPath = getTelegramWebhookPath();
+const telegramWebhookHealthHandler = getTelegramWebhookHealthHandler();
 const telegramWebhookHandler = getTelegramWebhookRouteHandler();
 
 const app = new Elysia({ name: "litecheats-web-server" });
 
 if (telegramWebhookHandler) {
 	app.post(telegramWebhookPath, telegramWebhookHandler);
+}
+
+if (telegramWebhookHealthHandler) {
+	app.get(telegramWebhookPath, telegramWebhookHealthHandler);
 }
 
 app.onRequest(({ request }) => {
