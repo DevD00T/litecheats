@@ -1,6 +1,7 @@
 import { useAuth } from "@/components/auth/auth-provider";
 import { buttonVariants } from "@/components/ui/button";
 import { type ZapHandle, ZapIcon } from "@/components/ui/zap";
+import { isBundledElectrobunRuntime } from "@/lib/electrobun";
 import { cn } from "@/lib/utils";
 import { motion } from "framer-motion";
 import { gsap } from "gsap";
@@ -34,6 +35,7 @@ export function SiteHeader({ themeMode, onToggleTheme }: SiteHeaderProps) {
 	const navigate = useNavigate();
 	const { isAuthenticated, status, user, logout } = useAuth();
 	const { pathname } = useLocation();
+	const showIconOnlyBrand = isBundledElectrobunRuntime();
 	const logoRef = useRef<ZapHandle | null>(null);
 	const brandTextRef = useRef<HTMLSpanElement | null>(null);
 	const logoResetTimerRef = useRef<number | null>(null);
@@ -130,20 +132,22 @@ export function SiteHeader({ themeMode, onToggleTheme }: SiteHeaderProps) {
 			<div className="mx-auto flex w-full max-w-6xl items-center justify-between gap-4 px-6 py-4 md:px-10">
 				<Link
 					to="/"
-					aria-label="Litecheats Technologies"
+					aria-label={showIconOnlyBrand ? "Home" : "Litecheats Technologies"}
 					className="inline-flex items-center gap-3 rounded-xl border border-primary/25 bg-primary/10 px-3 py-2 text-primary shadow-[0_12px_24px_-18px_rgba(59,130,246,0.7)] transition-colors hover:bg-primary/16"
 				>
 					<ZapIcon ref={logoRef} size={28} className="pointer-events-none shrink-0" aria-hidden />
-					<span
-						ref={brandTextRef}
-						className="font-heading text-sm font-semibold leading-none tracking-[0.01em] text-foreground sm:text-base"
-					>
-						{BRAND_CHARACTERS.map((item) => (
-							<span key={item.id} className="brand-char inline-block">
-								{item.char === " " ? "\u00A0" : item.char}
-							</span>
-						))}
-					</span>
+					{showIconOnlyBrand ? null : (
+						<span
+							ref={brandTextRef}
+							className="font-heading text-sm font-semibold leading-none tracking-[0.01em] text-foreground sm:text-base"
+						>
+							{BRAND_CHARACTERS.map((item) => (
+								<span key={item.id} className="brand-char inline-block">
+									{item.char === " " ? "\u00A0" : item.char}
+								</span>
+							))}
+						</span>
+					)}
 				</Link>
 				<nav className="hidden items-center gap-1 md:flex">
 					{navigation.map((item) => (
