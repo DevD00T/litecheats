@@ -5,6 +5,11 @@ import { Elysia } from "elysia";
 import { AUTH_API_PORT, AUTH_BASE_PATH } from "../shared/auth";
 import { DOWNLOADS_BASE_PATH } from "../shared/releases";
 import { startAuthServer } from "../src/bun/auth-server";
+import {
+	getTelegramWebhookPath,
+	getTelegramWebhookRouteHandler,
+	startTelegramBot,
+} from "../src/bun/telegram-bot";
 import { handleContactInquiry } from "./lib/contact-inquiry";
 
 const FULLSTACK_HOST = "0.0.0.0";
@@ -126,25 +131,33 @@ if (await isPortInUse(VITE_SERVER_PORT, "localhost")) {
 }
 
 await ensureAuthServerRunning();
+await startTelegramBot({ localPort: FULLSTACK_PORT });
+const telegramWebhookPath = getTelegramWebhookPath();
+const telegramWebhookHandler = getTelegramWebhookRouteHandler();
 
-const app = new Elysia({ name: "litecheats-fullstack-dev" })
-	.onRequest(({ request }) => {
-		const pathname = new URL(request.url).pathname;
+const app = new Elysia({ name: "litecheats-fullstack-dev" });
 
-		if (pathname === CONTACT_API_PATH && request.method === "POST") {
-			return handleContactInquiry(request);
-		}
+if (telegramWebhookHandler) {
+	app.post(telegramWebhookPath, telegramWebhookHandler);
+}
 
-		if (pathname === AUTH_BASE_PATH || pathname.startsWith(`${AUTH_BASE_PATH}/`)) {
-			return proxyAuthApi(request);
-		}
+app.onRequest(({ request }) => {
+	const pathname = new URL(request.url).pathname;
 
-		if (pathname === DOWNLOADS_BASE_PATH || pathname.startsWith(`${DOWNLOADS_BASE_PATH}/`)) {
-			return proxyAuthApi(request);
-		}
+	if (pathname === CONTACT_API_PATH && request.method === "POST") {
+		return handleContactInquiry(request);
+	}
 
-		return undefined;
-	})
+	if (pathname === AUTH_BASE_PATH || pathname.startsWith(`${AUTH_BASE_PATH}/`)) {
+		return proxyAuthApi(request);
+	}
+
+	if (pathname === DOWNLOADS_BASE_PATH || pathname.startsWith(`${DOWNLOADS_BASE_PATH}/`)) {
+		return proxyAuthApi(request);
+	}
+
+	return undefined;
+})
 	.get("/healthz", "ok")
 	.all("/*", ({ request }) => proxyVite(request))
 	.listen({ hostname: FULLSTACK_HOST, port: FULLSTACK_PORT, idleTimeout: 30 });

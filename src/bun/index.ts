@@ -4,6 +4,7 @@ import { Resend } from "resend";
 import { AUTH_API_PORT } from "../../shared/auth";
 import type { ContactInquiryPayload, MainRPC } from "../../shared/rpc";
 import { startAuthServer } from "./auth-server";
+import { startTelegramBot } from "./telegram-bot";
 
 const CONTACT_TO_EMAIL = Bun.env.RESEND_TO_EMAIL ?? "support@litecheats.com";
 const CONTACT_FROM_EMAIL =
@@ -246,6 +247,7 @@ if (await isPortInUse(AUTH_API_PORT)) {
 		}
 	}
 }
+await startTelegramBot();
 
 const mainViewUrl = await getMainViewUrl();
 console.log(`Main webview URL: ${mainViewUrl}`);

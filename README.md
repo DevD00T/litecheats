@@ -109,6 +109,48 @@ The Bun auth server runs on `http://localhost:8787` and exposes:
 - `PATCH /login/me`
 - `DELETE /login/me`
 
+### Telegram bot setup (GramIO)
+
+The backend can run a Telegram bot using [GramIO](https://gramio.dev).
+
+1. Set these in `.env`:
+
+```ini
+BOT_TOKEN=1234567890:your_telegram_bot_token
+TELEGRAM_BOT_ENABLED=true
+TELEGRAM_WEBHOOK_PATH=/telegram-webhook
+TELEGRAM_WEBHOOK_BASE_URL=https://litecheats.com
+TELEGRAM_WEBHOOK_SECRET_TOKEN=replace_with_random_secret
+```
+
+2. Start only the bot (manual mode):
+
+```bash
+bun run bot:start
+```
+
+Bot commands included:
+
+- `/start`
+- `/help`
+
+Webhook behavior:
+
+- In production (`NODE_ENV=production` or `node_env=production`), bot starts in webhook mode and registers:
+  - `${TELEGRAM_WEBHOOK_BASE_URL}${TELEGRAM_WEBHOOK_PATH}`
+- In development (`NODE_ENV=development` or `node_env=development`), bot uses long polling by default.
+
+Optional dev webhook tunnel (instead of polling):
+
+```ini
+TELEGRAM_DEV_WEBHOOK_TUNNEL=true
+TELEGRAM_DEV_WEBHOOK_TUNNEL_PORT=8080
+```
+
+This uses `untun` to expose local webhook URL automatically.
+
+When `BOT_TOKEN` is present and `TELEGRAM_BOT_ENABLED=true`, the bot starts with Bun runtimes (`bun run start`, `bun run web:fullstack`, and desktop Bun main process).
+
 ### Downloads API (MongoDB-backed)
 
 The app exposes a release feed and artifact download API backed by MongoDB:
