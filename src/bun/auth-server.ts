@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import { Elysia } from "elysia";
 import {
@@ -21,10 +22,15 @@ import {
 	type AdminUserListResponse,
 	type AdminUserListStats,
 	type ApiErrorResponse,
+	type AuthSession,
 	type AuthSuccessResponse,
 	type AuthUser,
 	DEFAULT_USER_ROLE,
 	type LoginPayload,
+	type LogoutAllSessionsResponse,
+	type RevokeSessionPayload,
+	type RevokeSessionResponse,
+	type SessionListResponse,
 	type SessionResponse,
 	type SignupPayload,
 	USER_ROLES,
@@ -44,11 +50,41 @@ import {
 const DEFAULT_MONGODB_URI = "mongodb://127.0.0.1:27017";
 const DEFAULT_MONGODB_DB_NAME = "litecheats";
 const ONE_DAY_MS = AUTH_COOKIE_MAX_AGE_SECONDS * 1000;
+const SESSION_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const PASSWORD_MIN_LENGTH = 8;
+const PASSWORD_MAX_LENGTH = 128;
+const FULL_NAME_MAX_LENGTH = 120;
+const COMPANY_MAX_LENGTH = 160;
+const EMAIL_MAX_LENGTH = 254;
+const REQUEST_JSON_MAX_BYTES = 64 * 1024;
+const DEFAULT_USER_AGENT = "unknown";
+const DEFAULT_CLIENT_IP = "unknown";
+const AUTH_MAX_ACTIVE_SESSIONS_PER_USER = Number(Bun.env.AUTH_MAX_ACTIVE_SESSIONS_PER_USER ?? 10);
+const AUTH_RATE_LIMIT_WINDOW_MS = Number(Bun.env.AUTH_RATE_LIMIT_WINDOW_MS ?? 60_000);
+const AUTH_LOGIN_RATE_LIMIT = Number(Bun.env.AUTH_LOGIN_RATE_LIMIT ?? 20);
+const AUTH_SIGNUP_RATE_LIMIT = Number(Bun.env.AUTH_SIGNUP_RATE_LIMIT ?? 10);
+const AUTH_SESSION_RATE_LIMIT = Number(Bun.env.AUTH_SESSION_RATE_LIMIT ?? 120);
+const AUTH_FORCE_SECURE_COOKIE =
+	Bun.env.AUTH_FORCE_SECURE_COOKIE === "1" || Bun.env.AUTH_FORCE_SECURE_COOKIE === "true";
+const AUTH_DEVICE_MAX_USER_AGENT_LENGTH = 512;
+const RATE_LIMIT_CLEANUP_MAX_STALE_MS = 10 * AUTH_RATE_LIMIT_WINDOW_MS;
+
+interface RateLimitBucket {
+	count: number;
+	resetAt: number;
+}
+
+interface SessionRequestMeta {
+	userAgent: string;
+	ipAddress: string;
+	deviceKey: string;
+}
 
 const mongoClient = new MongoClient(Bun.env.MONGODB_URI ?? DEFAULT_MONGODB_URI);
 const mongoDbName = Bun.env.MONGODB_DB_NAME ?? DEFAULT_MONGODB_DB_NAME;
 let dbPromise: Promise<Db> | null = null;
+const rateLimitStore = new Map<string, RateLimitBucket>();
 
 interface UserDocument extends Document {
 	_id: string;
@@ -67,6 +103,9 @@ interface UserDocument extends Document {
 interface SessionDocument extends Document {
 	_id: string;
 	userId: string;
+	userAgent: string;
+	ipAddress: string;
+	deviceKey: string;
 	createdAt: Date;
 	updatedAt: Date;
 	expiresAt: Date;
@@ -116,15 +155,49 @@ function normalizeEmail(email: string): string {
 }
 
 function assertValidEmail(email: string): void {
-	if (!EMAIL_PATTERN.test(email)) {
+	if (email.length > EMAIL_MAX_LENGTH || !EMAIL_PATTERN.test(email)) {
 		throw new HttpError(400, "Please provide a valid email address.");
 	}
 }
 
 function assertStrongPassword(password: string): void {
-	if (password.length < 8) {
-		throw new HttpError(400, "Password must be at least 8 characters long.");
+	if (password.length < PASSWORD_MIN_LENGTH || password.length > PASSWORD_MAX_LENGTH) {
+		throw new HttpError(
+			400,
+			`Password must be between ${PASSWORD_MIN_LENGTH} and ${PASSWORD_MAX_LENGTH} characters.`,
+		);
 	}
+
+	if (!/[A-Za-z]/.test(password) || !/\d/.test(password) || !/[^A-Za-z0-9]/.test(password)) {
+		throw new HttpError(400, "Password must include letters, numbers, and at least one symbol.");
+	}
+}
+
+function assertMaxLength(value: string, maxLength: number, fieldName: string): void {
+	if (value.length > maxLength) {
+		throw new HttpError(400, `${fieldName} must be ${maxLength} characters or fewer.`);
+	}
+}
+
+function normalizeBoundedText(
+	value: unknown,
+	fieldName: string,
+	maxLength: number,
+	optional = false,
+): string | undefined {
+	if (value === undefined || value === null) {
+		if (optional) return undefined;
+		throw new HttpError(400, `${fieldName} is required.`);
+	}
+
+	const normalized = String(value).trim();
+	if (!normalized) {
+		if (optional) return undefined;
+		throw new HttpError(400, `${fieldName} is required.`);
+	}
+
+	assertMaxLength(normalized, maxLength, fieldName);
+	return normalized;
 }
 
 function sanitizeRoleFlag(value: unknown): boolean {
@@ -198,23 +271,84 @@ function getSessionIdFromRequest(request: Request): string | null {
 	return cookies[AUTH_COOKIE_NAME] ?? null;
 }
 
-function createSessionCookie(sessionId: string): string {
+function sanitizeHeaderValue(value: string | null, fallback: string, maxLength = 256): string {
+	if (!value) return fallback;
+	const normalized = value.replace(/\s+/g, " ").trim();
+	if (!normalized) return fallback;
+	return normalized.slice(0, maxLength);
+}
+
+function inferForwardedProtocol(request: Request): string {
+	const forwardedProto = request.headers.get("x-forwarded-proto");
+	if (forwardedProto) {
+		return forwardedProto.split(",")[0]?.trim().toLowerCase() || "http";
+	}
+
+	return new URL(request.url).protocol.replace(":", "").toLowerCase();
+}
+
+function shouldUseSecureCookie(request: Request): boolean {
+	if (AUTH_FORCE_SECURE_COOKIE) return true;
+	const protocol = inferForwardedProtocol(request);
+	return protocol === "https" || protocol === "wss";
+}
+
+function extractClientIp(request: Request): string {
+	const forwardedFor = request.headers.get("x-forwarded-for");
+	if (forwardedFor) {
+		const candidate = forwardedFor
+			.split(",")
+			.map((entry) => entry.trim())
+			.find((entry) => entry.length > 0);
+		if (candidate) {
+			return candidate.slice(0, 128);
+		}
+	}
+
+	const proxyIp = request.headers.get("x-real-ip") ?? request.headers.get("cf-connecting-ip");
+	return sanitizeHeaderValue(proxyIp, DEFAULT_CLIENT_IP, 128);
+}
+
+function buildDeviceKey(request: Request, userAgent: string): string {
+	const acceptLanguage = sanitizeHeaderValue(request.headers.get("accept-language"), "na", 128);
+	const clientPlatform = sanitizeHeaderValue(request.headers.get("sec-ch-ua-platform"), "na", 64);
+	const clientMobile = sanitizeHeaderValue(request.headers.get("sec-ch-ua-mobile"), "na", 16);
+	const material = `${userAgent.toLowerCase()}|${acceptLanguage}|${clientPlatform}|${clientMobile}`;
+	return createHash("sha256").update(material).digest("hex");
+}
+
+function getSessionRequestMeta(request: Request): SessionRequestMeta {
+	const userAgent = sanitizeHeaderValue(
+		request.headers.get("user-agent"),
+		DEFAULT_USER_AGENT,
+		AUTH_DEVICE_MAX_USER_AGENT_LENGTH,
+	);
+	const ipAddress = extractClientIp(request);
+	const deviceKey = buildDeviceKey(request, userAgent);
+	return { userAgent, ipAddress, deviceKey };
+}
+
+function createSessionCookie(sessionId: string, request: Request): string {
+	const secure = shouldUseSecureCookie(request);
 	return [
 		`${AUTH_COOKIE_NAME}=${encodeURIComponent(sessionId)}`,
 		`Path=${AUTH_BASE_PATH}`,
 		`Max-Age=${AUTH_COOKIE_MAX_AGE_SECONDS}`,
 		"HttpOnly",
 		"SameSite=Lax",
+		...(secure ? ["Secure"] : []),
 	].join("; ");
 }
 
-function clearSessionCookie(): string {
+function clearSessionCookie(request: Request): string {
+	const secure = shouldUseSecureCookie(request);
 	return [
 		`${AUTH_COOKIE_NAME}=`,
 		`Path=${AUTH_BASE_PATH}`,
 		"Max-Age=0",
 		"HttpOnly",
 		"SameSite=Lax",
+		...(secure ? ["Secure"] : []),
 	].join("; ");
 }
 
@@ -233,6 +367,11 @@ function createCorsHeaders(request: Request): Headers {
 	headers.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
 	headers.set("Pragma", "no-cache");
 	headers.set("Expires", "0");
+	headers.set("X-Content-Type-Options", "nosniff");
+	headers.set("X-Frame-Options", "DENY");
+	headers.set("Referrer-Policy", "same-origin");
+	headers.set("X-DNS-Prefetch-Control", "off");
+	headers.set("Cross-Origin-Opener-Policy", "same-origin");
 	return headers;
 }
 
@@ -274,14 +413,11 @@ function parseSignupPayload(payload: unknown): SignupPayload {
 	}
 
 	const body = payload as Record<string, unknown>;
-	const fullName = String(body.fullName ?? "").trim();
-	const email = String(body.email ?? "").trim();
-	const company = String(body.company ?? "").trim();
+	const fullName = normalizeBoundedText(body.fullName, "fullName", FULL_NAME_MAX_LENGTH) ?? "";
+	const email = normalizeBoundedText(body.email, "email", EMAIL_MAX_LENGTH) ?? "";
+	const company = normalizeBoundedText(body.company, "company", COMPANY_MAX_LENGTH) ?? "";
 	const password = String(body.password ?? "");
-
-	if (!fullName || !email || !company || !password) {
-		throw new HttpError(400, "All signup fields are required.");
-	}
+	if (!password) throw new HttpError(400, "password is required.");
 
 	assertStrongPassword(password);
 	assertValidEmail(email);
@@ -295,14 +431,27 @@ function parseLoginPayload(payload: unknown): LoginPayload {
 	}
 
 	const body = payload as Record<string, unknown>;
-	const email = String(body.email ?? "").trim();
+	const email = normalizeBoundedText(body.email, "email", EMAIL_MAX_LENGTH) ?? "";
 	const password = String(body.password ?? "");
 
-	if (!email || !password) {
-		throw new HttpError(400, "Email and password are required.");
-	}
+	if (!password) throw new HttpError(400, "password is required.");
+	assertValidEmail(email);
 
 	return { email, password };
+}
+
+function parseRevokeSessionPayload(payload: unknown): RevokeSessionPayload {
+	if (!payload || typeof payload !== "object") {
+		throw new HttpError(400, "Invalid revoke-session payload.");
+	}
+
+	const body = payload as Record<string, unknown>;
+	const sessionId = typeof body.sessionId === "string" ? body.sessionId.trim() : "";
+	if (!sessionId) {
+		throw new HttpError(400, "sessionId is required.");
+	}
+
+	return { sessionId };
 }
 
 function parseUpdatePayload(payload: unknown): UpdateProfilePayload {
@@ -311,8 +460,14 @@ function parseUpdatePayload(payload: unknown): UpdateProfilePayload {
 	}
 
 	const body = payload as Record<string, unknown>;
-	const fullName = typeof body.fullName === "string" ? body.fullName.trim() : undefined;
-	const company = typeof body.company === "string" ? body.company.trim() : undefined;
+	const fullName =
+		typeof body.fullName === "undefined"
+			? undefined
+			: normalizeBoundedText(body.fullName, "fullName", FULL_NAME_MAX_LENGTH);
+	const company =
+		typeof body.company === "undefined"
+			? undefined
+			: normalizeBoundedText(body.company, "company", COMPANY_MAX_LENGTH);
 
 	if (!fullName && !company) {
 		throw new HttpError(400, "At least one profile field must be provided.");
@@ -328,9 +483,9 @@ function parseAdminCreateUserPayload(payload: unknown): AdminCreateUserPayload {
 
 	const body = payload as Record<string, unknown>;
 	const id = typeof body.id === "string" ? body.id.trim() : undefined;
-	const fullName = String(body.fullName ?? "").trim();
-	const email = String(body.email ?? "").trim();
-	const company = String(body.company ?? "").trim();
+	const fullName = normalizeBoundedText(body.fullName, "fullName", FULL_NAME_MAX_LENGTH) ?? "";
+	const email = normalizeBoundedText(body.email, "email", EMAIL_MAX_LENGTH) ?? "";
+	const company = normalizeBoundedText(body.company, "company", COMPANY_MAX_LENGTH) ?? "";
 	const password = String(body.password ?? "");
 	const isAdmin = sanitizeRoleFlag(body.isAdmin);
 	const isOwner = sanitizeRoleFlag(body.isOwner);
@@ -339,9 +494,7 @@ function parseAdminCreateUserPayload(payload: unknown): AdminCreateUserPayload {
 		throw new HttpError(400, "User id must be 128 characters or fewer.");
 	}
 
-	if (!fullName || !email || !company || !password) {
-		throw new HttpError(400, "fullName, email, company, and password are required.");
-	}
+	if (!password) throw new HttpError(400, "password is required.");
 
 	assertValidEmail(email);
 	assertStrongPassword(password);
@@ -368,24 +521,15 @@ function parseAdminUpdateUserPayload(payload: unknown): AdminUpdateUserPayload {
 	const patch: AdminUpdateUserPayload = {};
 
 	if (hasOwn("fullName")) {
-		if (typeof body.fullName !== "string" || !body.fullName.trim()) {
-			throw new HttpError(400, "fullName must be a non-empty string.");
-		}
-		patch.fullName = body.fullName.trim();
+		patch.fullName = normalizeBoundedText(body.fullName, "fullName", FULL_NAME_MAX_LENGTH);
 	}
 
 	if (hasOwn("company")) {
-		if (typeof body.company !== "string" || !body.company.trim()) {
-			throw new HttpError(400, "company must be a non-empty string.");
-		}
-		patch.company = body.company.trim();
+		patch.company = normalizeBoundedText(body.company, "company", COMPANY_MAX_LENGTH);
 	}
 
 	if (hasOwn("email")) {
-		if (typeof body.email !== "string" || !body.email.trim()) {
-			throw new HttpError(400, "email must be a non-empty string.");
-		}
-		const email = body.email.trim();
+		const email = normalizeBoundedText(body.email, "email", EMAIL_MAX_LENGTH) ?? "";
 		assertValidEmail(email);
 		patch.email = email;
 	}
@@ -419,6 +563,35 @@ function parseAdminUpdateUserPayload(payload: unknown): AdminUpdateUserPayload {
 	return patch;
 }
 
+function assertWithinRateLimit(request: Request, scope: string, maxRequests: number): void {
+	if (maxRequests <= 0) return;
+
+	const now = Date.now();
+	const clientIp = extractClientIp(request);
+	const key = `${scope}:${clientIp}`;
+	const existing = rateLimitStore.get(key);
+
+	if (!existing || now >= existing.resetAt) {
+		rateLimitStore.set(key, {
+			count: 1,
+			resetAt: now + AUTH_RATE_LIMIT_WINDOW_MS,
+		});
+	} else {
+		existing.count += 1;
+		if (existing.count > maxRequests) {
+			throw new HttpError(429, "Too many requests. Please try again shortly.");
+		}
+	}
+
+	if (rateLimitStore.size > 4000) {
+		for (const [entryKey, bucket] of rateLimitStore) {
+			if (now - bucket.resetAt > RATE_LIMIT_CLEANUP_MAX_STALE_MS) {
+				rateLimitStore.delete(entryKey);
+			}
+		}
+	}
+}
+
 function hasPrivilegedAccess(user: WithId<UserDocument>): boolean {
 	return sanitizeRoleFlag(user.isAdmin) || sanitizeRoleFlag(user.isOwner);
 }
@@ -428,6 +601,16 @@ function hasOwnerAccess(user: WithId<UserDocument>): boolean {
 }
 
 async function readRequestJson(request: Request): Promise<unknown> {
+	const contentType = request.headers.get("content-type") ?? "";
+	if (!contentType.toLowerCase().includes("application/json")) {
+		throw new HttpError(415, "Content-Type must be application/json.");
+	}
+
+	const contentLength = Number(request.headers.get("content-length") ?? "0");
+	if (Number.isFinite(contentLength) && contentLength > REQUEST_JSON_MAX_BYTES) {
+		throw new HttpError(413, "Request payload is too large.");
+	}
+
 	try {
 		return await request.json();
 	} catch {
@@ -498,10 +681,22 @@ async function ensureMongoSchema(db: Db): Promise<void> {
 	await ensureCollection(db, "sessions", {
 		$jsonSchema: {
 			bsonType: "object",
-			required: ["_id", "userId", "createdAt", "updatedAt", "expiresAt"],
+			required: [
+				"_id",
+				"userId",
+				"userAgent",
+				"ipAddress",
+				"deviceKey",
+				"createdAt",
+				"updatedAt",
+				"expiresAt",
+			],
 			properties: {
 				_id: { bsonType: "string" },
 				userId: { bsonType: "string" },
+				userAgent: { bsonType: "string" },
+				ipAddress: { bsonType: "string" },
+				deviceKey: { bsonType: "string" },
 				createdAt: { bsonType: "date" },
 				updatedAt: { bsonType: "date" },
 				expiresAt: { bsonType: "date" },
@@ -623,10 +818,29 @@ async function ensureMongoSchema(db: Db): Promise<void> {
 		},
 		{ $set: { roles: [DEFAULT_USER_ROLE], updatedAt: migrationTimestamp } },
 	);
+	const fallbackDeviceKey = createHash("sha256")
+		.update(`${DEFAULT_USER_AGENT}|na|na|na`)
+		.digest("hex");
+	await sessions.updateMany(
+		{ userAgent: { $exists: false } },
+		{ $set: { userAgent: DEFAULT_USER_AGENT, updatedAt: migrationTimestamp } },
+	);
+	await sessions.updateMany(
+		{ ipAddress: { $exists: false } },
+		{ $set: { ipAddress: DEFAULT_CLIENT_IP, updatedAt: migrationTimestamp } },
+	);
+	await sessions.updateMany(
+		{ deviceKey: { $exists: false } },
+		{ $set: { deviceKey: fallbackDeviceKey, updatedAt: migrationTimestamp } },
+	);
 
 	await users.createIndex({ emailLower: 1 }, { unique: true, name: "users_email_unique" });
 	await users.createIndex({ roles: 1 }, { name: "users_roles_idx" });
 	await sessions.createIndex({ userId: 1 }, { name: "sessions_user_id_idx" });
+	await sessions.createIndex(
+		{ userId: 1, deviceKey: 1, expiresAt: 1 },
+		{ name: "sessions_user_device_idx" },
+	);
 	await sessions.createIndex(
 		{ expiresAt: 1 },
 		{ expireAfterSeconds: 0, name: "sessions_ttl_expires_at_idx" },
@@ -815,14 +1029,66 @@ async function findUserByEmail(email: string): Promise<WithId<UserDocument> | nu
 	return users.findOne({ emailLower: normalizeEmail(email) });
 }
 
-async function createSession(userId: string): Promise<WithId<SessionDocument>> {
+function toAuthSession(session: WithId<SessionDocument>, currentSessionId: string): AuthSession {
+	return {
+		id: session._id,
+		userAgent: session.userAgent,
+		ipAddress: session.ipAddress,
+		deviceKey: session.deviceKey,
+		createdAt: session.createdAt.toISOString(),
+		updatedAt: session.updatedAt.toISOString(),
+		expiresAt: session.expiresAt.toISOString(),
+		current: session._id === currentSessionId,
+	};
+}
+
+interface ResolvedSessionContext {
+	user: WithId<UserDocument>;
+	session: WithId<SessionDocument>;
+}
+
+async function createSession(
+	userId: string,
+	meta: SessionRequestMeta,
+): Promise<WithId<SessionDocument>> {
 	const db = await getDb();
 	const sessions = db.collection<SessionDocument>("sessions");
 
 	const now = new Date();
+	await sessions.deleteMany({
+		userId,
+		expiresAt: { $lte: now },
+	});
+
+	const existingDeviceSession = await sessions.findOne({
+		userId,
+		deviceKey: meta.deviceKey,
+		expiresAt: { $gt: now },
+	});
+	if (existingDeviceSession) {
+		throw new HttpError(
+			409,
+			"This device already has an active session. Log out from that session before signing in again.",
+		);
+	}
+
+	const activeSessionCount = await sessions.countDocuments({
+		userId,
+		expiresAt: { $gt: now },
+	});
+	if (activeSessionCount >= AUTH_MAX_ACTIVE_SESSIONS_PER_USER) {
+		throw new HttpError(
+			429,
+			`Maximum active sessions reached (${AUTH_MAX_ACTIVE_SESSIONS_PER_USER}). Revoke an existing session and try again.`,
+		);
+	}
+
 	const session: SessionDocument = {
 		_id: createUuidV7(),
 		userId,
+		userAgent: meta.userAgent,
+		ipAddress: meta.ipAddress,
+		deviceKey: meta.deviceKey,
 		createdAt: now,
 		updatedAt: now,
 		expiresAt: new Date(now.getTime() + ONE_DAY_MS),
@@ -844,20 +1110,61 @@ async function deleteSessionsByUserId(userId: string): Promise<void> {
 	await sessions.deleteMany({ userId });
 }
 
-async function resolveSessionUser(
-	request: Request,
-): Promise<{ user: WithId<UserDocument>; sessionId: string } | null> {
+async function deleteSessionForUser(userId: string, sessionId: string): Promise<boolean> {
+	const db = await getDb();
+	const sessions = db.collection<SessionDocument>("sessions");
+	const result = await sessions.deleteOne({ _id: sessionId, userId });
+	return result.deletedCount > 0;
+}
+
+async function deleteAllSessionsForUser(userId: string): Promise<number> {
+	const db = await getDb();
+	const sessions = db.collection<SessionDocument>("sessions");
+	const result = await sessions.deleteMany({ userId });
+	return result.deletedCount;
+}
+
+async function listActiveSessionsForUser(
+	userId: string,
+	currentSessionId: string,
+): Promise<SessionListResponse> {
+	const db = await getDb();
+	const sessions = db.collection<SessionDocument>("sessions");
+	const now = new Date();
+	await sessions.deleteMany({ userId, expiresAt: { $lte: now } });
+
+	const activeSessions = await sessions
+		.find({
+			userId,
+			expiresAt: { $gt: now },
+		})
+		.sort({ updatedAt: -1 })
+		.toArray();
+
+	return {
+		sessions: activeSessions.map((session) => toAuthSession(session, currentSessionId)),
+	};
+}
+
+async function resolveSessionUser(request: Request): Promise<ResolvedSessionContext | null> {
 	const sessionId = getSessionIdFromRequest(request);
 	if (!sessionId) return null;
 
 	const db = await getDb();
 	const sessions = db.collection<SessionDocument>("sessions");
 	const users = db.collection<UserDocument>("users");
+	const now = Date.now();
+	const requestMeta = getSessionRequestMeta(request);
 
 	const session = await sessions.findOne({ _id: sessionId });
 	if (!session) return null;
 
-	if (session.expiresAt.getTime() <= Date.now()) {
+	if (session.expiresAt.getTime() <= now) {
+		await sessions.deleteOne({ _id: session._id });
+		return null;
+	}
+
+	if (session.deviceKey !== requestMeta.deviceKey) {
 		await sessions.deleteOne({ _id: session._id });
 		return null;
 	}
@@ -868,7 +1175,26 @@ async function resolveSessionUser(
 		return null;
 	}
 
-	return { user, sessionId };
+	if (now - session.updatedAt.getTime() >= SESSION_REFRESH_INTERVAL_MS) {
+		const refreshed = {
+			updatedAt: new Date(now),
+			expiresAt: new Date(now + ONE_DAY_MS),
+			ipAddress: requestMeta.ipAddress,
+			userAgent: requestMeta.userAgent,
+		} satisfies Partial<SessionDocument>;
+		await sessions.updateOne(
+			{ _id: session._id },
+			{
+				$set: refreshed,
+			},
+		);
+		session.updatedAt = refreshed.updatedAt ?? session.updatedAt;
+		session.expiresAt = refreshed.expiresAt ?? session.expiresAt;
+		session.userAgent = refreshed.userAgent ?? session.userAgent;
+		session.ipAddress = refreshed.ipAddress ?? session.ipAddress;
+	}
+
+	return { user, session };
 }
 
 async function updateUser(
@@ -897,9 +1223,7 @@ async function deleteUser(userId: string): Promise<void> {
 	await deleteSessionsByUserId(userId);
 }
 
-async function requirePrivilegedSession(
-	request: Request,
-): Promise<{ user: WithId<UserDocument>; sessionId: string }> {
+async function requirePrivilegedSession(request: Request): Promise<ResolvedSessionContext> {
 	const session = await resolveSessionUser(request);
 	if (!session) {
 		throw new HttpError(401, "Unauthorized.");
@@ -1083,16 +1407,18 @@ function buildErrorResponse(message: string): ApiErrorResponse {
 
 async function handleSignup(request: Request): Promise<Response> {
 	const payload = parseSignupPayload(await readRequestJson(request));
+	assertWithinRateLimit(request, `signup:${normalizeEmail(payload.email)}`, AUTH_SIGNUP_RATE_LIMIT);
 	const user = await createUser(payload);
-	const session = await createSession(user._id);
+	const session = await createSession(user._id, getSessionRequestMeta(request));
 
 	return jsonResponse(request, 201, buildAuthSuccessResponse(user), {
-		"Set-Cookie": createSessionCookie(session._id),
+		"Set-Cookie": createSessionCookie(session._id, request),
 	});
 }
 
 async function handleLogin(request: Request): Promise<Response> {
 	const payload = parseLoginPayload(await readRequestJson(request));
+	assertWithinRateLimit(request, `login:${normalizeEmail(payload.email)}`, AUTH_LOGIN_RATE_LIMIT);
 	const user = await findUserByEmail(payload.email);
 
 	if (!user) {
@@ -1104,29 +1430,32 @@ async function handleLogin(request: Request): Promise<Response> {
 		throw new HttpError(401, "Invalid email or password.");
 	}
 
-	const session = await createSession(user._id);
+	const session = await createSession(user._id, getSessionRequestMeta(request));
 	return jsonResponse(request, 200, buildAuthSuccessResponse(user), {
-		"Set-Cookie": createSessionCookie(session._id),
+		"Set-Cookie": createSessionCookie(session._id, request),
 	});
 }
 
 async function handleLogout(request: Request): Promise<Response> {
+	assertWithinRateLimit(request, "logout", AUTH_SESSION_RATE_LIMIT);
 	const sessionId = getSessionIdFromRequest(request);
 	if (sessionId) {
 		await deleteSession(sessionId);
 	}
 
 	return emptyResponse(request, 204, {
-		"Set-Cookie": clearSessionCookie(),
+		"Set-Cookie": clearSessionCookie(request),
 	});
 }
 
 async function handleSession(request: Request): Promise<Response> {
+	assertWithinRateLimit(request, "session", AUTH_SESSION_RATE_LIMIT);
 	const session = await resolveSessionUser(request);
 	return jsonResponse(request, 200, buildSessionResponse(session?.user ?? null));
 }
 
 async function handleGetMe(request: Request): Promise<Response> {
+	assertWithinRateLimit(request, "me:get", AUTH_SESSION_RATE_LIMIT);
 	const session = await resolveSessionUser(request);
 	if (!session) {
 		throw new HttpError(401, "Unauthorized.");
@@ -1136,6 +1465,7 @@ async function handleGetMe(request: Request): Promise<Response> {
 }
 
 async function handlePatchMe(request: Request): Promise<Response> {
+	assertWithinRateLimit(request, "me:patch", AUTH_SESSION_RATE_LIMIT);
 	const session = await resolveSessionUser(request);
 	if (!session) {
 		throw new HttpError(401, "Unauthorized.");
@@ -1147,6 +1477,7 @@ async function handlePatchMe(request: Request): Promise<Response> {
 }
 
 async function handleDeleteMe(request: Request): Promise<Response> {
+	assertWithinRateLimit(request, "me:delete", AUTH_SESSION_RATE_LIMIT);
 	const session = await resolveSessionUser(request);
 	if (!session) {
 		throw new HttpError(401, "Unauthorized.");
@@ -1154,17 +1485,68 @@ async function handleDeleteMe(request: Request): Promise<Response> {
 
 	await deleteUser(session.user._id);
 	return emptyResponse(request, 204, {
-		"Set-Cookie": clearSessionCookie(),
+		"Set-Cookie": clearSessionCookie(request),
+	});
+}
+
+async function handleListSessions(request: Request): Promise<Response> {
+	assertWithinRateLimit(request, "sessions:list", AUTH_SESSION_RATE_LIMIT);
+	const session = await resolveSessionUser(request);
+	if (!session) {
+		throw new HttpError(401, "Unauthorized.");
+	}
+
+	const response = await listActiveSessionsForUser(session.user._id, session.session._id);
+	return jsonResponse(request, 200, response);
+}
+
+async function handleRevokeSession(request: Request): Promise<Response> {
+	assertWithinRateLimit(request, "sessions:revoke", AUTH_SESSION_RATE_LIMIT);
+	const auth = await resolveSessionUser(request);
+	if (!auth) {
+		throw new HttpError(401, "Unauthorized.");
+	}
+
+	const payload = parseRevokeSessionPayload(await readRequestJson(request));
+	const deleted = await deleteSessionForUser(auth.user._id, payload.sessionId);
+	if (!deleted) {
+		throw new HttpError(404, "Session not found.");
+	}
+
+	const response: RevokeSessionResponse = { revoked: true };
+	const extraHeaders =
+		payload.sessionId === auth.session._id
+			? {
+					"Set-Cookie": clearSessionCookie(request),
+				}
+			: undefined;
+
+	return jsonResponse(request, 200, response, extraHeaders);
+}
+
+async function handleLogoutAllSessions(request: Request): Promise<Response> {
+	assertWithinRateLimit(request, "sessions:logout-all", AUTH_SESSION_RATE_LIMIT);
+	const auth = await resolveSessionUser(request);
+	if (!auth) {
+		throw new HttpError(401, "Unauthorized.");
+	}
+
+	const revokedCount = await deleteAllSessionsForUser(auth.user._id);
+	const response: LogoutAllSessionsResponse = { revokedCount };
+	return jsonResponse(request, 200, response, {
+		"Set-Cookie": clearSessionCookie(request),
 	});
 }
 
 async function handleAdminListUsers(request: Request): Promise<Response> {
+	assertWithinRateLimit(request, "admin:users:list", AUTH_SESSION_RATE_LIMIT);
 	await requirePrivilegedSession(request);
 	const response = await listAdminUsers();
 	return jsonResponse(request, 200, response);
 }
 
 async function handleAdminCreateUser(request: Request): Promise<Response> {
+	assertWithinRateLimit(request, "admin:users:create", AUTH_SESSION_RATE_LIMIT);
 	const adminSession = await requirePrivilegedSession(request);
 	const payload = parseAdminCreateUserPayload(await readRequestJson(request));
 
@@ -1177,6 +1559,7 @@ async function handleAdminCreateUser(request: Request): Promise<Response> {
 }
 
 async function handleAdminUpdateUser(request: Request, userId: string): Promise<Response> {
+	assertWithinRateLimit(request, "admin:users:update", AUTH_SESSION_RATE_LIMIT);
 	const adminSession = await requirePrivilegedSession(request);
 	const payload = parseAdminUpdateUserPayload(await readRequestJson(request));
 	const updated = await updateUserByAdmin(adminSession.user, userId, payload);
@@ -1184,6 +1567,7 @@ async function handleAdminUpdateUser(request: Request, userId: string): Promise<
 }
 
 async function handleAdminDeleteUser(request: Request, userId: string): Promise<Response> {
+	assertWithinRateLimit(request, "admin:users:delete", AUTH_SESSION_RATE_LIMIT);
 	const adminSession = await requirePrivilegedSession(request);
 	await deleteUserByAdmin(adminSession.user, userId);
 	const response: AdminDeleteUserResponse = { deleted: true };
@@ -1291,8 +1675,20 @@ async function routeRequest(request: Request): Promise<Response> {
 		return handleLogout(request);
 	}
 
+	if (request.method === "POST" && url.pathname === `${AUTH_BASE_PATH}/logout-all`) {
+		return handleLogoutAllSessions(request);
+	}
+
 	if (request.method === "GET" && url.pathname === `${AUTH_BASE_PATH}/session`) {
 		return handleSession(request);
+	}
+
+	if (request.method === "GET" && url.pathname === `${AUTH_BASE_PATH}/sessions`) {
+		return handleListSessions(request);
+	}
+
+	if (request.method === "POST" && url.pathname === `${AUTH_BASE_PATH}/sessions/revoke`) {
+		return handleRevokeSession(request);
 	}
 
 	if (request.method === "GET" && url.pathname === `${AUTH_BASE_PATH}/me`) {
@@ -1318,12 +1714,12 @@ async function handleRequestWithErrorBoundary(request: Request): Promise<Respons
 			return jsonResponse(request, error.status, buildErrorResponse(error.message));
 		}
 
-		const message = error instanceof Error ? error.message : "Internal server error.";
-		return jsonResponse(request, 500, buildErrorResponse(message));
+		console.error("Unhandled auth API error:", error);
+		return jsonResponse(request, 500, buildErrorResponse("Internal server error."));
 	}
 }
 
-export async function startAuthServer(): Promise<Elysia> {
+export async function startAuthServer() {
 	const app = new Elysia({ name: "litecheats-auth-api" }).all("/*", ({ request }) =>
 		handleRequestWithErrorBoundary(request),
 	);

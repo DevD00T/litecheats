@@ -4,8 +4,10 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { type FormEvent, useEffect, useState } from "react";
+import { authApi } from "@/lib/auth-api";
+import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import type { AuthSession } from "shared/auth";
 import { toast } from "sonner";
 
 function formatRole(role: string): string {
@@ -15,17 +17,50 @@ function formatRole(role: string): string {
 
 export function AccountPage() {
 	const navigate = useNavigate();
-	const { user, logout, updateProfile, deleteAccount } = useAuth();
+	const { user, logout, refreshSession, updateProfile, deleteAccount } = useAuth();
 	const [fullName, setFullName] = useState("");
 	const [company, setCompany] = useState("");
 	const [isSaving, setIsSaving] = useState(false);
 	const [isLoggingOut, setIsLoggingOut] = useState(false);
 	const [isDeleting, setIsDeleting] = useState(false);
+	const [sessions, setSessions] = useState<AuthSession[]>([]);
+	const [isLoadingSessions, setIsLoadingSessions] = useState(false);
+	const [isLoggingOutAll, setIsLoggingOutAll] = useState(false);
+	const [revokingSessionId, setRevokingSessionId] = useState<string | null>(null);
 
 	useEffect(() => {
 		setFullName(user?.fullName ?? "");
 		setCompany(user?.company ?? "");
 	}, [user]);
+
+	const formatSessionDate = useCallback((value: string) => {
+		try {
+			return new Date(value).toLocaleString("en-IN", {
+				dateStyle: "medium",
+				timeStyle: "short",
+				timeZone: "Asia/Kolkata",
+			});
+		} catch {
+			return value;
+		}
+	}, []);
+
+	const loadSessions = useCallback(async () => {
+		setIsLoadingSessions(true);
+		try {
+			const response = await authApi.getSessions();
+			setSessions(response.sessions);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "Failed to load active sessions.";
+			toast.error(message);
+		} finally {
+			setIsLoadingSessions(false);
+		}
+	}, []);
+
+	useEffect(() => {
+		void loadSessions();
+	}, [loadSessions]);
 
 	const handleSaveProfile = async (event: FormEvent<HTMLFormElement>) => {
 		event.preventDefault();
@@ -76,6 +111,44 @@ export function AccountPage() {
 			toast.error(message);
 		} finally {
 			setIsDeleting(false);
+		}
+	};
+
+	const handleLogoutAllSessions = async () => {
+		const accepted = window.confirm("Log out from all devices? You will need to sign in again.");
+		if (!accepted) return;
+
+		setIsLoggingOutAll(true);
+		try {
+			const response = await authApi.logoutAllSessions();
+			await refreshSession({ withLoading: false });
+			toast.success(`Logged out from ${response.revokedCount} session(s).`);
+			navigate("/login", { replace: true });
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "Failed to log out all sessions.";
+			toast.error(message);
+		} finally {
+			setIsLoggingOutAll(false);
+		}
+	};
+
+	const handleRevokeSession = async (sessionId: string, current: boolean) => {
+		setRevokingSessionId(sessionId);
+		try {
+			await authApi.revokeSession({ sessionId });
+			if (current) {
+				await refreshSession({ withLoading: false });
+				toast.success("Current session revoked. Please sign in again.");
+				navigate("/login", { replace: true });
+				return;
+			}
+			await loadSessions();
+			toast.success("Session revoked.");
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "Failed to revoke session.";
+			toast.error(message);
+		} finally {
+			setRevokingSessionId(null);
 		}
 	};
 
@@ -141,6 +214,14 @@ export function AccountPage() {
 								<Button
 									type="button"
 									variant="outline"
+									disabled={isLoggingOutAll}
+									onClick={handleLogoutAllSessions}
+								>
+									{isLoggingOutAll ? "Logging out all..." : "Logout All Sessions"}
+								</Button>
+								<Button
+									type="button"
+									variant="outline"
 									disabled={isLoggingOut}
 									onClick={handleLogout}
 								>
@@ -148,6 +229,62 @@ export function AccountPage() {
 								</Button>
 							</div>
 						</form>
+					</CardContent>
+				</Card>
+
+				<Card className="bg-background/90">
+					<CardHeader>
+						<CardTitle className="font-heading text-xl">Active Sessions</CardTitle>
+						<CardDescription>Manage active device sessions for this account.</CardDescription>
+					</CardHeader>
+					<CardContent className="space-y-3">
+						<div className="flex gap-3">
+							<Button type="button" variant="outline" onClick={() => void loadSessions()}>
+								{isLoadingSessions ? "Refreshing..." : "Refresh Sessions"}
+							</Button>
+						</div>
+						{sessions.length === 0 ? (
+							<p className="text-sm text-muted-foreground">No active sessions found.</p>
+						) : (
+							<div className="grid gap-3">
+								{sessions.map((session) => (
+									<div
+										key={session.id}
+										className="rounded-lg border border-border/65 bg-muted/25 p-4 text-sm"
+									>
+										<div className="mb-2 flex flex-wrap items-center gap-2">
+											{session.current ? (
+												<Badge className="bg-primary/15 text-primary" variant="secondary">
+													Current
+												</Badge>
+											) : null}
+											<Badge variant="outline">{session.ipAddress}</Badge>
+										</div>
+										<p className="font-medium text-foreground">{session.userAgent}</p>
+										<p className="mt-1 text-xs text-muted-foreground">
+											Signed in: {formatSessionDate(session.createdAt)}
+										</p>
+										<p className="text-xs text-muted-foreground">
+											Last active: {formatSessionDate(session.updatedAt)}
+										</p>
+										<p className="text-xs text-muted-foreground">
+											Expires: {formatSessionDate(session.expiresAt)}
+										</p>
+										<div className="mt-3">
+											<Button
+												type="button"
+												variant="outline"
+												size="sm"
+												disabled={revokingSessionId === session.id}
+												onClick={() => void handleRevokeSession(session.id, session.current)}
+											>
+												{revokingSessionId === session.id ? "Revoking..." : "Revoke Session"}
+											</Button>
+										</div>
+									</div>
+								))}
+							</div>
+						)}
 					</CardContent>
 				</Card>
 

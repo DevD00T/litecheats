@@ -128,14 +128,21 @@ if (await isPortInUse(VITE_SERVER_PORT, "localhost")) {
 await ensureAuthServerRunning();
 
 const app = new Elysia({ name: "litecheats-fullstack-dev" })
-	.onBeforeHandle(({ request }) => {
+	.onRequest(({ request }) => {
 		const pathname = new URL(request.url).pathname;
-		if (pathname === CONTACT_API_PATH) {
+
+		if (pathname === CONTACT_API_PATH && request.method === "POST") {
 			return handleContactInquiry(request);
 		}
-		if (pathname.startsWith(AUTH_BASE_PATH) || pathname.startsWith(DOWNLOADS_BASE_PATH)) {
+
+		if (pathname === AUTH_BASE_PATH || pathname.startsWith(`${AUTH_BASE_PATH}/`)) {
 			return proxyAuthApi(request);
 		}
+
+		if (pathname === DOWNLOADS_BASE_PATH || pathname.startsWith(`${DOWNLOADS_BASE_PATH}/`)) {
+			return proxyAuthApi(request);
+		}
+
 		return undefined;
 	})
 	.get("/healthz", "ok")

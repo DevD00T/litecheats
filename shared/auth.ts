@@ -42,6 +42,33 @@ export interface SessionResponse {
 	user: AuthUser | null;
 }
 
+export interface AuthSession {
+	id: string;
+	userAgent: string;
+	ipAddress: string;
+	deviceKey: string;
+	createdAt: string;
+	updatedAt: string;
+	expiresAt: string;
+	current: boolean;
+}
+
+export interface SessionListResponse {
+	sessions: AuthSession[];
+}
+
+export interface RevokeSessionPayload {
+	sessionId: string;
+}
+
+export interface RevokeSessionResponse {
+	revoked: true;
+}
+
+export interface LogoutAllSessionsResponse {
+	revokedCount: number;
+}
+
 export interface AuthSuccessResponse {
 	user: AuthUser;
 }

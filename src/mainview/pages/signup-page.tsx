@@ -39,6 +39,15 @@ function evaluatePasswordStrength(password: string): { score: number; label: str
 	return { score: 100, label: "Very Strong" };
 }
 
+function isStrongPassword(password: string): boolean {
+	return (
+		password.length >= 8 &&
+		/[A-Za-z]/.test(password) &&
+		/\d/.test(password) &&
+		/[^A-Za-z0-9]/.test(password)
+	);
+}
+
 export function SignupPage() {
 	const navigate = useNavigate();
 	const { signup } = useAuth();
@@ -62,8 +71,8 @@ export function SignupPage() {
 			return;
 		}
 
-		if (passwordValue.length < 8) {
-			toast.error("Password must be at least 8 characters.");
+		if (!isStrongPassword(passwordValue)) {
+			toast.error("Password must include letters, numbers, and symbols (min 8 chars).");
 			return;
 		}
 

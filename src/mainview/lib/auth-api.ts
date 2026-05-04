@@ -8,6 +8,10 @@ import {
 	type ApiErrorResponse,
 	type AuthSuccessResponse,
 	type LoginPayload,
+	type LogoutAllSessionsResponse,
+	type RevokeSessionPayload,
+	type RevokeSessionResponse,
+	type SessionListResponse,
 	type SessionResponse,
 	type SignupPayload,
 	type UpdateProfilePayload,
@@ -88,7 +92,17 @@ export const authApi = {
 		authRequest<null>("/logout", {
 			method: "POST",
 		}),
+	logoutAllSessions: () =>
+		authRequest<LogoutAllSessionsResponse>("/logout-all", {
+			method: "POST",
+		}),
 	getSession: () => authRequest<SessionResponse>("/session"),
+	getSessions: () => authRequest<SessionListResponse>("/sessions"),
+	revokeSession: (payload: RevokeSessionPayload) =>
+		authRequest<RevokeSessionResponse>("/sessions/revoke", {
+			method: "POST",
+			body: JSON.stringify(payload),
+		}),
 	getMe: () => authRequest<AuthSuccessResponse>("/me"),
 	updateMe: (payload: UpdateProfilePayload) =>
 		authRequest<AuthSuccessResponse>("/me", {
