@@ -227,7 +227,7 @@ const mainRPC = BrowserView.defineRPC<MainRPC>({
 	},
 });
 
-let authServer: ReturnType<typeof Bun.serve> | null = null;
+let authServer: Awaited<ReturnType<typeof startAuthServer>> | null = null;
 if (await isPortInUse(AUTH_API_PORT)) {
 	console.warn(
 		`Auth server port ${AUTH_API_PORT} is already in use. Reusing existing listener and continuing startup.`,

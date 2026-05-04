@@ -109,72 +109,13 @@ The Bun auth server runs on `http://localhost:8787` and exposes:
 - `PATCH /login/me`
 - `DELETE /login/me`
 
-### Desktop release pipeline (MongoDB-backed downloads)
+### Downloads API (MongoDB-backed)
 
-The app now includes a release feed and binary download API backed by MongoDB:
+The app exposes a release feed and artifact download API backed by MongoDB:
 
-- `GET /downloads/releases` (latest + history)
+- `GET /downloads/releases`
 - `GET /downloads/releases/latest`
 - `GET /downloads/artifacts/:artifactId/file`
-
-The web UI has a `/downloads` page that reads this feed and renders platform download buttons.
-
-#### 1) Build installers
-
-```bash
-bun run release:build:mac
-bun run release:build:win
-bun run release:build:linux
-```
-
-`release:build:*` commands are host-validated:
-
-- run `release:build:mac` on macOS
-- run `release:build:win` on Windows
-- run `release:build:linux` on Linux
-
-If you call a non-host target, the script exits with a clear error instead of producing incorrect artifacts.
-
-For local host-only build:
-
-```bash
-bun run release:build:host
-```
-
-#### 2) Publish installers to MongoDB
-
-```bash
-bun run release:publish --version 0.1.0 --notes "Stable rollout"
-```
-
-By default, publisher scans `artifacts/`. Override with `.env`:
-
-```ini
-RELEASE_ARTIFACT_DIRS=artifacts,./custom-artifacts
-RELEASE_VERSION=0.1.0
-RELEASE_NOTES="Stable release"
-```
-
-You can also do build+publish in one command per platform:
-
-```bash
-bun run release:mac:publish
-bun run release:win:publish
-bun run release:linux:publish
-```
-
-#### 3) Automated cross-platform publish (recommended)
-
-Use the GitHub Actions matrix workflow:
-
-- [`.github/workflows/release-desktop-matrix.yml`](/Users/debarghadas/Downloads/electrobun-starter-main/.github/workflows/release-desktop-matrix.yml)
-
-It builds on `macos-latest`, `windows-latest`, and `ubuntu-latest`, then publishes each platform artifact set into MongoDB GridFS for the shared `/downloads` feed.
-
-Required GitHub repository secrets:
-
-- `MONGODB_URI`
-- `MONGODB_DB_NAME`
 
 ### appbun wrapper generation
 
@@ -197,6 +138,14 @@ bun run dev          # Same as start, with Electrobun --watch enabled
 ```bash
 bun run dev:hmr      # Alias for bun run dev
 ```
+
+### Web full-stack dev server (Elysia + HMR)
+
+```bash
+bun run web:fullstack
+```
+
+This starts an Elysia gateway on `http://localhost:8080`, proxies frontend requests to Vite (`:5173`) with HMR, and routes `/login`, `/downloads`, and `/contact/inquiry` to the Bun backend APIs.
 
 The desktop app now waits for the Vite server and then loads `http://localhost:5173` in development, so webview and browser behavior stay aligned.
 
@@ -245,9 +194,6 @@ Electrobun uses `--env` to distinguish build channels:
 |---|---|---|
 | `dev` | `bun run start` | Runs Vite + Electrobun together for local development |
 | `dev (bundled)` | `bun run start:bundled` | Launches desktop app from bundled `views://` assets |
-| `release (mac)` | `bun run release:mac:publish` | Builds stable mac artifacts and publishes them to MongoDB |
-| `release (win)` | `bun run release:win:publish` | Builds stable Windows artifacts and publishes them to MongoDB |
-| `release (linux)` | `bun run release:linux:publish` | Builds stable Linux artifacts and publishes them to MongoDB |
 | `canary` | `bun run build:canary` | Pre-release testing build |
 | `stable` | `bun run build:stable` | Production release build |
 
@@ -289,10 +235,6 @@ mac: {
 ```
 
 See the [Electrobun docs](https://blackboard.sh/electrobun/docs/) for details on certificates and notarization setup.
-
-### Cross-platform
-
-The config includes `mac`, `linux`, and `win` blocks. Set `bundleCEF: true` on each platform to include the Chromium Embedded Framework in the app bundle for distribution (set to `false` during development to save build time).
 
 ## Key Config Files
 

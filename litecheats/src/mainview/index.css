@@ -1,0 +1,112 @@
+:root {
+  color-scheme: light;
+  --shell-ink: rgba(22, 22, 24, 0.92);
+  --shell-muted: rgba(55, 65, 81, 0.72);
+  --shell-border: rgba(15, 23, 42, 0.10);
+  --shell-toolbar: rgba(248, 248, 250, 0.84);
+  --shell-toolbar-height: 40px;
+  --shell-toolbar-left: 78px;
+  --shell-topbar-display: flex;
+  --shell-toolbar-border-alpha: 1;
+  --shell-origin-display: block;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  font-family: "SF Pro Text", "Segoe UI", sans-serif;
+  background: #ffffff;
+}
+
+.shell {
+  width: 100%;
+  height: 100%;
+  position: relative;
+  background: #ffffff;
+}
+
+.topbar {
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: var(--shell-toolbar-height);
+  display: var(--shell-topbar-display);
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 16px 0 var(--shell-toolbar-left);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), var(--shell-toolbar));
+  border-bottom: calc(1px * var(--shell-toolbar-border-alpha)) solid var(--shell-border);
+  backdrop-filter: blur(24px) saturate(1.15);
+  z-index: 2;
+}
+
+.topbar-brand {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.site-icon {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  flex: 0 0 auto;
+}
+
+#site-name {
+  font-size: 12.5px;
+  line-height: 1;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--shell-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.site-origin {
+  display: var(--shell-origin-display);
+  font-size: 11px;
+  line-height: 1;
+  letter-spacing: 0.01em;
+  color: var(--shell-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.stage {
+  position: absolute;
+  inset: var(--shell-toolbar-height) 0 0 0;
+}
+
+.webview-mount {
+  width: 100%;
+  height: 100%;
+}
+
+electrobun-webview {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: transparent;
+}
+
+@media (max-width: 720px) {
+  .topbar {
+    padding-left: 68px;
+  }
+
+  .site-origin {
+    display: none;
+  }
+}

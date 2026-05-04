@@ -1,4 +1,5 @@
 import { Readable } from "node:stream";
+import { Elysia } from "elysia";
 import {
 	type Db,
 	type Document,
@@ -1309,25 +1310,26 @@ async function routeRequest(request: Request): Promise<Response> {
 	return jsonResponse(request, 405, buildErrorResponse("Method Not Allowed"));
 }
 
-export async function startAuthServer(): Promise<ReturnType<typeof Bun.serve>> {
-	const server = Bun.serve({
-		port: AUTH_API_PORT,
-		idleTimeout: 30,
-		fetch: async (request) => {
-			try {
-				return await routeRequest(request);
-			} catch (error) {
-				if (error instanceof HttpError) {
-					return jsonResponse(request, error.status, buildErrorResponse(error.message));
-				}
+async function handleRequestWithErrorBoundary(request: Request): Promise<Response> {
+	try {
+		return await routeRequest(request);
+	} catch (error) {
+		if (error instanceof HttpError) {
+			return jsonResponse(request, error.status, buildErrorResponse(error.message));
+		}
 
-				const message = error instanceof Error ? error.message : "Internal server error.";
-				return jsonResponse(request, 500, buildErrorResponse(message));
-			}
-		},
-	});
+		const message = error instanceof Error ? error.message : "Internal server error.";
+		return jsonResponse(request, 500, buildErrorResponse(message));
+	}
+}
+
+export async function startAuthServer(): Promise<Elysia> {
+	const app = new Elysia({ name: "litecheats-auth-api" }).all("/*", ({ request }) =>
+		handleRequestWithErrorBoundary(request),
+	);
+	app.listen({ port: AUTH_API_PORT, idleTimeout: 30 });
 
 	console.log(`Auth server started at http://localhost:${AUTH_API_PORT}${AUTH_BASE_PATH}`);
 	console.log(`Downloads API available at http://localhost:${AUTH_API_PORT}${DOWNLOADS_BASE_PATH}`);
-	return server;
+	return app;
 }
