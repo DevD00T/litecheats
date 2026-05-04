@@ -1,0 +1,21 @@
+{
+  "name": "litecheats",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Desktop wrapper for litecheats.com",
+  "scripts": {
+    "start": "electrobun dev",
+    "dev": "electrobun dev --watch",
+    "build": "electrobun build",
+    "build:dmg": "bun run build:stable && node scripts/create-dmg.mjs",
+    "build:canary": "electrobun build --env=canary",
+    "build:stable": "electrobun build --env=stable"
+  },
+  "dependencies": {
+    "electrobun": "1.15.1"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "create-dmg": "^8.0.0"
+  }
+}
