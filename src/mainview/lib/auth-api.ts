@@ -16,6 +16,16 @@ import {
 	type SignupPayload,
 	type UpdateProfilePayload,
 } from "shared/auth";
+import type {
+	AdminCreateReleasePayload,
+	AdminDeleteArtifactResponse,
+	AdminDeleteReleaseResponse,
+	AdminUpdateArtifactPayload,
+	AdminUpdateReleasePayload,
+	ReleaseFeedResponse,
+	ReleaseFormat,
+	ReleasePlatform,
+} from "shared/releases";
 
 function resolveAuthApiOrigin(): string {
 	if (typeof window !== "undefined") {
@@ -49,16 +59,23 @@ async function parseJson<T>(response: Response): Promise<T | null> {
 }
 
 async function authRequest<T>(path: string, init?: RequestInit): Promise<T> {
+	const isFormDataBody = typeof FormData !== "undefined" && init?.body instanceof FormData;
+	const headers = new Headers(init?.headers);
+	if (!isFormDataBody && !headers.has("Content-Type")) {
+		headers.set("Content-Type", "application/json");
+	}
+	if (!headers.has("Pragma")) {
+		headers.set("Pragma", "no-cache");
+	}
+	if (!headers.has("Cache-Control")) {
+		headers.set("Cache-Control", "no-cache");
+	}
+
 	const response = await fetch(`${AUTH_API_URL}${path}`, {
 		...init,
 		cache: "no-store",
 		credentials: "include",
-		headers: {
-			"Content-Type": "application/json",
-			Pragma: "no-cache",
-			"Cache-Control": "no-cache",
-			...(init?.headers ?? {}),
-		},
+		headers,
 	});
 
 	if (response.status === 204) {
@@ -129,6 +146,60 @@ export const authApi = {
 		}),
 	deleteAdminUser: (userId: string) =>
 		authRequest<AdminDeleteUserResponse>(`/admin/users/${encodeURIComponent(userId)}`, {
+			method: "DELETE",
+		}),
+	getAdminReleases: () =>
+		authRequest<ReleaseFeedResponse>("/admin/releases", {
+			method: "GET",
+		}),
+	createAdminRelease: (payload: AdminCreateReleasePayload) =>
+		authRequest<ReleaseFeedResponse>("/admin/releases", {
+			method: "POST",
+			body: JSON.stringify(payload),
+		}),
+	updateAdminRelease: (releaseId: string, payload: AdminUpdateReleasePayload) =>
+		authRequest<ReleaseFeedResponse>(`/admin/releases/${encodeURIComponent(releaseId)}`, {
+			method: "PATCH",
+			body: JSON.stringify(payload),
+		}),
+	deleteAdminRelease: (releaseId: string) =>
+		authRequest<AdminDeleteReleaseResponse>(`/admin/releases/${encodeURIComponent(releaseId)}`, {
+			method: "DELETE",
+		}),
+	uploadAdminReleaseArtifact: (payload: {
+		releaseId: string;
+		file: File;
+		platform: ReleasePlatform;
+		format: ReleaseFormat;
+		target?: string;
+		filename?: string;
+	}) => {
+		const formData = new FormData();
+		formData.set("file", payload.file);
+		formData.set("platform", payload.platform);
+		formData.set("format", payload.format);
+		if (payload.target?.trim()) {
+			formData.set("target", payload.target.trim());
+		}
+		if (payload.filename?.trim()) {
+			formData.set("filename", payload.filename.trim());
+		}
+
+		return authRequest<ReleaseFeedResponse>(
+			`/admin/releases/${encodeURIComponent(payload.releaseId)}/artifacts`,
+			{
+				method: "POST",
+				body: formData,
+			},
+		);
+	},
+	updateAdminArtifact: (artifactId: string, payload: AdminUpdateArtifactPayload) =>
+		authRequest<ReleaseFeedResponse>(`/admin/artifacts/${encodeURIComponent(artifactId)}`, {
+			method: "PATCH",
+			body: JSON.stringify(payload),
+		}),
+	deleteAdminArtifact: (artifactId: string) =>
+		authRequest<AdminDeleteArtifactResponse>(`/admin/artifacts/${encodeURIComponent(artifactId)}`, {
 			method: "DELETE",
 		}),
 };

@@ -1,8 +1,8 @@
 const APP_CONFIG = {
   "name": "Litecheats",
   "title": "Litecheats",
-  "origin": "http://localhost:5173",
-  "url": "http://localhost:5173/",
+  "origin": "http://localhost:8080",
+  "url": "http://localhost:8080/",
   "themeColor": "#bc246e",
   "titlebar": "unified",
   "showOrigin": true,
@@ -40,4 +40,4 @@ siteIcon?.addEventListener("error", () => {
   siteIcon.remove();
 });
 
-console.log("Loading http://localhost:5173/");
+console.log("Loading http://localhost:8080/");

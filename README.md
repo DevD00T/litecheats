@@ -192,10 +192,10 @@ Generate a DMG directly (same shape as your command):
 bun run appbun:dmg
 ```
 
-HMR wrapper target (local Vite URL):
+HMR wrapper target (local fullstack gateway URL):
 
 ```bash
-APPBUN_URL=http://localhost:5173 bun run appbun:hmr:create
+APPBUN_URL=http://localhost:8080 bun run appbun:hmr:create
 ```
 
 Then run wrapper + Vite together with hot reload:
@@ -204,9 +204,9 @@ Then run wrapper + Vite together with hot reload:
 bun run appbun:hmr:run
 ```
 
-`appbun:hmr:run` refreshes `./litecheats` against `http://localhost:5173` before starting,
-so the wrapper does not stay pinned to production URL during local HMR. If Vite is already
-running on that URL, it is reused.
+`appbun:hmr:run` refreshes `./litecheats` against `http://localhost:8080` before starting,
+uses the fullstack dev gateway (`web:fullstack`) so `/downloads` and auth routes work in
+desktop HMR, and reuses an existing server if one is already running on that URL.
 
 ### Development with file watching
 
@@ -301,7 +301,7 @@ Then build a stable release:
 bun run build:stable
 ```
 
-This generates the app bundle plus patch files for delta updates. Upload the build output to your `baseUrl` location. The app can check for and apply updates at runtime using the `Updater` API from `electrobun/bun`.
+This generates the app bundle plus patch files for delta updates. Upload the build output to your `baseUrl` location only if you intentionally enable updater-based distribution.
 
 ### macOS DMG release publishing (MongoDB-backed downloads)
 
@@ -333,6 +333,9 @@ and makes the file available through:
 
 Current rollout starts with macOS DMG. Windows/Linux artifacts can be published using the
 same publisher script once those build outputs are available.
+
+Admins/owners can add, update, and delete versions and artifacts directly from the site
+admin panel. CLI publish scripts remain available for operational workflows.
 
 ### macOS code signing and notarization
 

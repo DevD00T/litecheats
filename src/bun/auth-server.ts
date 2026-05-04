@@ -38,8 +38,15 @@ import {
 	type UserRole,
 } from "../../shared/auth";
 import {
+	type AdminCreateReleasePayload,
+	type AdminDeleteArtifactResponse,
+	type AdminDeleteReleaseResponse,
+	type AdminUpdateArtifactPayload,
+	type AdminUpdateReleasePayload,
 	DOWNLOADS_BASE_PATH,
 	RELEASE_FILES_BUCKET,
+	RELEASE_FORMATS,
+	RELEASE_PLATFORMS,
 	type ReleaseArtifactSummary,
 	type ReleaseFeedResponse,
 	type ReleaseFormat,
@@ -69,6 +76,11 @@ const AUTH_FORCE_SECURE_COOKIE =
 	Bun.env.AUTH_FORCE_SECURE_COOKIE === "1" || Bun.env.AUTH_FORCE_SECURE_COOKIE === "true";
 const AUTH_DEVICE_MAX_USER_AGENT_LENGTH = 512;
 const RATE_LIMIT_CLEANUP_MAX_STALE_MS = 10 * AUTH_RATE_LIMIT_WINDOW_MS;
+const RELEASE_VERSION_MAX_LENGTH = 120;
+const RELEASE_NOTES_MAX_LENGTH = 8000;
+const RELEASE_TARGET_MAX_LENGTH = 100;
+const RELEASE_FILENAME_MAX_LENGTH = 255;
+const RELEASE_UPLOAD_MAX_BYTES = Number(Bun.env.RELEASE_UPLOAD_MAX_BYTES ?? 1024 * 1024 * 1024);
 
 interface RateLimitBucket {
 	count: number;
@@ -156,6 +168,9 @@ class HttpError extends Error {
 	}
 }
 
+const RELEASE_PLATFORM_SET = new Set<ReleasePlatform>(RELEASE_PLATFORMS);
+const RELEASE_FORMAT_SET = new Set<ReleaseFormat>(RELEASE_FORMATS);
+
 function createUuidV7(): string {
 	const maybeUuidV7 = (Bun as unknown as { randomUUIDv7?: () => string }).randomUUIDv7;
 	return typeof maybeUuidV7 === "function" ? maybeUuidV7() : crypto.randomUUID();
@@ -209,6 +224,75 @@ function normalizeBoundedText(
 
 	assertMaxLength(normalized, maxLength, fieldName);
 	return normalized;
+}
+
+function normalizeReleaseVersion(value: unknown, fieldName = "version"): string {
+	const normalized = normalizeBoundedText(value, fieldName, RELEASE_VERSION_MAX_LENGTH) ?? "";
+	return normalized;
+}
+
+function normalizeReleaseNotes(value: unknown): string {
+	if (value === undefined || value === null) return "";
+	const normalized = String(value).trim();
+	assertMaxLength(normalized, RELEASE_NOTES_MAX_LENGTH, "notes");
+	return normalized;
+}
+
+function normalizeReleaseTarget(value: unknown, optional = false): string | undefined {
+	if (value === undefined || value === null) {
+		if (optional) return undefined;
+		return "universal";
+	}
+
+	const normalized = String(value).trim();
+	if (!normalized) {
+		if (optional) return undefined;
+		return "universal";
+	}
+
+	assertMaxLength(normalized, RELEASE_TARGET_MAX_LENGTH, "target");
+	return normalized;
+}
+
+function normalizeReleaseFilename(value: unknown, fallbackName: string): string {
+	const normalized = typeof value === "string" ? value.trim() : "";
+	const filename = normalized || fallbackName;
+	assertMaxLength(filename, RELEASE_FILENAME_MAX_LENGTH, "filename");
+	return filename;
+}
+
+function normalizeReleasePlatform(value: unknown): ReleasePlatform {
+	const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+	if (!RELEASE_PLATFORM_SET.has(normalized as ReleasePlatform)) {
+		throw new HttpError(400, `Unsupported platform "${String(value ?? "")}".`);
+	}
+	return normalized as ReleasePlatform;
+}
+
+function normalizeReleaseFormat(value: unknown): ReleaseFormat {
+	const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+	if (!RELEASE_FORMAT_SET.has(normalized as ReleaseFormat)) {
+		throw new HttpError(400, `Unsupported format "${String(value ?? "")}".`);
+	}
+	return normalized as ReleaseFormat;
+}
+
+function parseOptionalReleaseDate(value: unknown): Date | undefined {
+	if (value === undefined || value === null || value === "") {
+		return undefined;
+	}
+
+	const raw = String(value).trim();
+	if (!raw) {
+		return undefined;
+	}
+
+	const parsed = new Date(raw);
+	if (Number.isNaN(parsed.getTime())) {
+		throw new HttpError(400, "publishedAt must be a valid ISO date/time string.");
+	}
+
+	return parsed;
 }
 
 function sanitizeRoleFlag(value: unknown): boolean {
@@ -574,6 +658,104 @@ function parseAdminUpdateUserPayload(payload: unknown): AdminUpdateUserPayload {
 	return patch;
 }
 
+function parseAdminCreateReleasePayload(payload: unknown): AdminCreateReleasePayload {
+	if (!payload || typeof payload !== "object") {
+		throw new HttpError(400, "Invalid admin create-release payload.");
+	}
+
+	const body = payload as Record<string, unknown>;
+	const version = normalizeReleaseVersion(body.version);
+	const notes = normalizeReleaseNotes(body.notes);
+	const publishedAt = parseOptionalReleaseDate(body.publishedAt);
+	const isLatest = typeof body.isLatest === "boolean" ? body.isLatest : true;
+
+	return {
+		version,
+		notes,
+		publishedAt: publishedAt?.toISOString(),
+		isLatest,
+	};
+}
+
+function parseAdminUpdateReleasePayload(payload: unknown): AdminUpdateReleasePayload {
+	if (!payload || typeof payload !== "object") {
+		throw new HttpError(400, "Invalid admin update-release payload.");
+	}
+
+	const body = payload as Record<string, unknown>;
+	const hasOwn = (field: string) => Object.prototype.hasOwnProperty.call(body, field);
+	const patch: AdminUpdateReleasePayload = {};
+
+	if (hasOwn("version")) {
+		patch.version = normalizeReleaseVersion(body.version);
+	}
+
+	if (hasOwn("notes")) {
+		patch.notes = normalizeReleaseNotes(body.notes);
+	}
+
+	if (hasOwn("publishedAt")) {
+		const publishedAt = parseOptionalReleaseDate(body.publishedAt);
+		if (!publishedAt) {
+			throw new HttpError(400, "publishedAt must be provided when updating release date.");
+		}
+		patch.publishedAt = publishedAt.toISOString();
+	}
+
+	if (hasOwn("isLatest")) {
+		if (typeof body.isLatest !== "boolean") {
+			throw new HttpError(400, "isLatest must be a boolean.");
+		}
+		patch.isLatest = body.isLatest;
+	}
+
+	if (!Object.keys(patch).length) {
+		throw new HttpError(400, "At least one release update field is required.");
+	}
+
+	return patch;
+}
+
+function parseAdminUpdateArtifactPayload(payload: unknown): AdminUpdateArtifactPayload {
+	if (!payload || typeof payload !== "object") {
+		throw new HttpError(400, "Invalid admin update-artifact payload.");
+	}
+
+	const body = payload as Record<string, unknown>;
+	const hasOwn = (field: string) => Object.prototype.hasOwnProperty.call(body, field);
+	const patch: AdminUpdateArtifactPayload = {};
+
+	if (hasOwn("platform")) {
+		patch.platform = normalizeReleasePlatform(body.platform);
+	}
+
+	if (hasOwn("format")) {
+		patch.format = normalizeReleaseFormat(body.format);
+	}
+
+	if (hasOwn("target")) {
+		patch.target = normalizeReleaseTarget(body.target) ?? "universal";
+	}
+
+	if (hasOwn("filename")) {
+		if (typeof body.filename !== "string") {
+			throw new HttpError(400, "filename must be a string.");
+		}
+		const trimmed = body.filename.trim();
+		if (!trimmed) {
+			throw new HttpError(400, "filename cannot be empty.");
+		}
+		assertMaxLength(trimmed, RELEASE_FILENAME_MAX_LENGTH, "filename");
+		patch.filename = trimmed;
+	}
+
+	if (!Object.keys(patch).length) {
+		throw new HttpError(400, "At least one artifact update field is required.");
+	}
+
+	return patch;
+}
+
 function assertWithinRateLimit(request: Request, scope: string, maxRequests: number): void {
 	if (maxRequests <= 0) return;
 
@@ -626,6 +808,24 @@ async function readRequestJson(request: Request): Promise<unknown> {
 		return await request.json();
 	} catch {
 		throw new HttpError(400, "Malformed JSON body.");
+	}
+}
+
+async function readRequestFormData(request: Request): Promise<FormData> {
+	const contentType = request.headers.get("content-type") ?? "";
+	if (!contentType.toLowerCase().includes("multipart/form-data")) {
+		throw new HttpError(415, "Content-Type must be multipart/form-data.");
+	}
+
+	const contentLength = Number(request.headers.get("content-length") ?? "0");
+	if (Number.isFinite(contentLength) && contentLength > RELEASE_UPLOAD_MAX_BYTES + 1024 * 1024) {
+		throw new HttpError(413, "Uploaded artifact is too large.");
+	}
+
+	try {
+		return await request.formData();
+	} catch {
+		throw new HttpError(400, "Malformed multipart form data.");
 	}
 }
 
@@ -961,12 +1161,12 @@ function toReleaseSummary(
 	};
 }
 
-async function buildReleaseFeed(): Promise<ReleaseFeedResponse> {
+async function buildReleaseFeed(limit = 20): Promise<ReleaseFeedResponse> {
 	const db = await getDb();
 	const releases = db.collection<ReleaseVersionDocument>("release_versions");
 	const artifacts = db.collection<ReleaseArtifactDocument>("release_artifacts");
 
-	const releaseList = await releases.find().sort({ publishedAt: -1 }).limit(20).toArray();
+	const releaseList = await releases.find().sort({ publishedAt: -1 }).limit(limit).toArray();
 	if (!releaseList.length) {
 		return { latest: null, releases: [] };
 	}
@@ -993,6 +1193,311 @@ async function buildReleaseFeed(): Promise<ReleaseFeedResponse> {
 		latest,
 		releases: summaries,
 	};
+}
+
+function resolveReleaseMimeType(format: ReleaseFormat, uploadedType?: string): string {
+	if (uploadedType?.trim()) {
+		return uploadedType.trim();
+	}
+
+	switch (format) {
+		case "dmg":
+			return "application/x-apple-diskimage";
+		case "exe":
+			return "application/vnd.microsoft.portable-executable";
+		case "appimage":
+			return "application/octet-stream";
+		case "deb":
+			return "application/vnd.debian.binary-package";
+		case "rpm":
+			return "application/x-rpm";
+		case "zip":
+			return "application/zip";
+		case "tar.gz":
+			return "application/gzip";
+		case "tar.zst":
+			return "application/zstd";
+		default:
+			return "application/octet-stream";
+	}
+}
+
+async function computeFileSha256(file: File): Promise<string> {
+	const hash = createHash("sha256");
+	const fileBuffer = await file.arrayBuffer();
+	hash.update(new Uint8Array(fileBuffer));
+	return hash.digest("hex");
+}
+
+async function setLatestReleaseId(releaseId: string, now: Date): Promise<void> {
+	const db = await getDb();
+	const releases = db.collection<ReleaseVersionDocument>("release_versions");
+	await releases.updateMany(
+		{ _id: { $ne: releaseId }, isLatest: true },
+		{ $set: { isLatest: false, updatedAt: now } },
+	);
+	await releases.updateOne({ _id: releaseId }, { $set: { isLatest: true, updatedAt: now } });
+}
+
+async function ensureAtLeastOneLatestRelease(now: Date): Promise<void> {
+	const db = await getDb();
+	const releases = db.collection<ReleaseVersionDocument>("release_versions");
+	const latest = await releases.findOne({ isLatest: true });
+	if (latest) return;
+
+	const fallback = await releases.find().sort({ publishedAt: -1 }).limit(1).next();
+	if (!fallback) return;
+	await releases.updateOne({ _id: fallback._id }, { $set: { isLatest: true, updatedAt: now } });
+}
+
+async function createReleaseByAdmin(payload: AdminCreateReleasePayload): Promise<void> {
+	const db = await getDb();
+	const releases = db.collection<ReleaseVersionDocument>("release_versions");
+	const now = new Date();
+	const releaseId = crypto.randomUUID();
+	const publishedAt = payload.publishedAt ? new Date(payload.publishedAt) : now;
+	const shouldBeLatest = payload.isLatest ?? true;
+
+	try {
+		await releases.insertOne({
+			_id: releaseId,
+			version: payload.version,
+			notes: payload.notes ?? "",
+			publishedAt,
+			isLatest: shouldBeLatest,
+			createdAt: now,
+			updatedAt: now,
+		});
+	} catch (error) {
+		if (error instanceof MongoServerError && error.code === 11000) {
+			throw new HttpError(409, "A release with this version already exists.");
+		}
+		throw error;
+	}
+
+	if (shouldBeLatest) {
+		await setLatestReleaseId(releaseId, now);
+	} else {
+		await ensureAtLeastOneLatestRelease(now);
+	}
+}
+
+async function updateReleaseByAdmin(
+	releaseId: string,
+	payload: AdminUpdateReleasePayload,
+): Promise<void> {
+	const db = await getDb();
+	const releases = db.collection<ReleaseVersionDocument>("release_versions");
+	const artifacts = db.collection<ReleaseArtifactDocument>("release_artifacts");
+	const now = new Date();
+
+	const current = await releases.findOne({ _id: releaseId });
+	if (!current) {
+		throw new HttpError(404, "Release not found.");
+	}
+
+	const patch: Partial<ReleaseVersionDocument> = { updatedAt: now };
+	if (typeof payload.version === "string") patch.version = payload.version;
+	if (typeof payload.notes === "string") patch.notes = payload.notes;
+	if (typeof payload.publishedAt === "string") patch.publishedAt = new Date(payload.publishedAt);
+
+	try {
+		await releases.updateOne({ _id: releaseId }, { $set: patch });
+	} catch (error) {
+		if (error instanceof MongoServerError && error.code === 11000) {
+			throw new HttpError(409, "A release with this version already exists.");
+		}
+		throw error;
+	}
+
+	if (typeof payload.version === "string" && payload.version !== current.version) {
+		await artifacts.updateMany(
+			{ releaseId },
+			{
+				$set: { version: payload.version },
+			},
+		);
+	}
+
+	if (payload.isLatest === true) {
+		await setLatestReleaseId(releaseId, now);
+	} else if (payload.isLatest === false) {
+		await releases.updateOne({ _id: releaseId }, { $set: { isLatest: false, updatedAt: now } });
+		await ensureAtLeastOneLatestRelease(now);
+	}
+}
+
+async function deleteReleaseByAdmin(releaseId: string): Promise<number> {
+	const db = await getDb();
+	const releases = db.collection<ReleaseVersionDocument>("release_versions");
+	const artifacts = db.collection<ReleaseArtifactDocument>("release_artifacts");
+	const bucket = new GridFSBucket(db, { bucketName: RELEASE_FILES_BUCKET });
+	const now = new Date();
+
+	const release = await releases.findOne({ _id: releaseId });
+	if (!release) {
+		throw new HttpError(404, "Release not found.");
+	}
+
+	const relatedArtifacts = await artifacts.find({ releaseId }).toArray();
+	for (const artifact of relatedArtifacts) {
+		try {
+			await bucket.delete(new ObjectId(artifact.gridFsFileId));
+		} catch {
+			// Ignore stale GridFS references during cleanup.
+		}
+	}
+
+	const artifactDelete = await artifacts.deleteMany({ releaseId });
+	await releases.deleteOne({ _id: releaseId });
+	await ensureAtLeastOneLatestRelease(now);
+
+	return artifactDelete.deletedCount;
+}
+
+async function uploadReleaseArtifactByAdmin(releaseId: string, formData: FormData): Promise<void> {
+	const fileEntry = formData.get("file");
+	if (!(fileEntry instanceof File)) {
+		throw new HttpError(400, "Artifact file is required.");
+	}
+
+	if (fileEntry.size <= 0) {
+		throw new HttpError(400, "Uploaded artifact cannot be empty.");
+	}
+	if (fileEntry.size > RELEASE_UPLOAD_MAX_BYTES) {
+		throw new HttpError(413, "Uploaded artifact is too large.");
+	}
+
+	const db = await getDb();
+	const releases = db.collection<ReleaseVersionDocument>("release_versions");
+	const artifacts = db.collection<ReleaseArtifactDocument>("release_artifacts");
+	const bucket = new GridFSBucket(db, { bucketName: RELEASE_FILES_BUCKET });
+	const release = await releases.findOne({ _id: releaseId });
+	if (!release) {
+		throw new HttpError(404, "Release not found.");
+	}
+
+	const platform = normalizeReleasePlatform(formData.get("platform"));
+	const format = normalizeReleaseFormat(formData.get("format"));
+	const target = normalizeReleaseTarget(formData.get("target")) ?? "universal";
+	const filename = normalizeReleaseFilename(
+		formData.get("filename"),
+		fileEntry.name || "artifact.bin",
+	);
+	const now = new Date();
+
+	const existing = await artifacts.findOne({
+		releaseId,
+		platform,
+		format,
+		target,
+	});
+
+	if (existing) {
+		try {
+			await bucket.delete(new ObjectId(existing.gridFsFileId));
+		} catch {
+			// Ignore stale GridFS references during replacement.
+		}
+		await artifacts.deleteOne({ _id: existing._id });
+	}
+
+	const sha256 = await computeFileSha256(fileEntry);
+	const upload = bucket.openUploadStream(filename, {
+		metadata: {
+			releaseId,
+			version: release.version,
+			platform,
+			format,
+			target,
+			sha256,
+		},
+	});
+	const fileBuffer = Buffer.from(await fileEntry.arrayBuffer());
+	await new Promise<void>((resolve, reject) => {
+		upload.once("finish", () => resolve());
+		upload.once("error", (error) => reject(error));
+		upload.end(fileBuffer);
+	});
+
+	await artifacts.insertOne({
+		_id: crypto.randomUUID(),
+		releaseId,
+		version: release.version,
+		platform,
+		format,
+		target,
+		filename,
+		sizeBytes: fileEntry.size,
+		sha256,
+		mimeType: resolveReleaseMimeType(format, fileEntry.type),
+		gridFsFileId: (upload.id as ObjectId).toHexString(),
+		createdAt: now,
+	});
+}
+
+async function updateReleaseArtifactByAdmin(
+	artifactId: string,
+	payload: AdminUpdateArtifactPayload,
+): Promise<void> {
+	const db = await getDb();
+	const artifacts = db.collection<ReleaseArtifactDocument>("release_artifacts");
+	const existing = await artifacts.findOne({ _id: artifactId });
+	if (!existing) {
+		throw new HttpError(404, "Release artifact not found.");
+	}
+
+	const nextPlatform = payload.platform ?? existing.platform;
+	const nextFormat = payload.format ?? existing.format;
+	const nextTarget = payload.target ?? existing.target;
+
+	const conflicting = await artifacts.findOne({
+		_id: { $ne: artifactId },
+		releaseId: existing.releaseId,
+		platform: nextPlatform,
+		format: nextFormat,
+		target: nextTarget,
+	});
+	if (conflicting) {
+		throw new HttpError(
+			409,
+			"An artifact for this release already exists with the same platform, format, and target.",
+		);
+	}
+
+	const patch: Partial<ReleaseArtifactDocument> = {};
+	if (payload.platform) patch.platform = payload.platform;
+	if (payload.format) patch.format = payload.format;
+	if (payload.target) patch.target = payload.target;
+	if (payload.filename) patch.filename = payload.filename;
+
+	if (Object.keys(patch).length === 0) {
+		return;
+	}
+
+	if (patch.format) {
+		patch.mimeType = resolveReleaseMimeType(patch.format);
+	}
+
+	await artifacts.updateOne({ _id: artifactId }, { $set: patch });
+}
+
+async function deleteReleaseArtifactByAdmin(artifactId: string): Promise<void> {
+	const db = await getDb();
+	const artifacts = db.collection<ReleaseArtifactDocument>("release_artifacts");
+	const bucket = new GridFSBucket(db, { bucketName: RELEASE_FILES_BUCKET });
+	const existing = await artifacts.findOne({ _id: artifactId });
+	if (!existing) {
+		throw new HttpError(404, "Release artifact not found.");
+	}
+
+	try {
+		await bucket.delete(new ObjectId(existing.gridFsFileId));
+	} catch {
+		// Ignore stale GridFS references during cleanup.
+	}
+
+	await artifacts.deleteOne({ _id: artifactId });
 }
 
 async function getReleaseArtifactById(
@@ -1623,6 +2128,77 @@ async function handleAdminDeleteUser(request: Request, userId: string): Promise<
 	return jsonResponse(request, 200, response);
 }
 
+async function handleAdminListReleases(request: Request): Promise<Response> {
+	assertWithinRateLimit(request, "admin:releases:list", AUTH_SESSION_RATE_LIMIT);
+	await requirePrivilegedSession(request);
+	const feed = await buildReleaseFeed(100);
+	return jsonResponse(request, 200, feed);
+}
+
+async function handleAdminCreateRelease(request: Request): Promise<Response> {
+	assertWithinRateLimit(request, "admin:releases:create", AUTH_SESSION_RATE_LIMIT);
+	await requirePrivilegedSession(request);
+	const payload = parseAdminCreateReleasePayload(await readRequestJson(request));
+	await createReleaseByAdmin(payload);
+	const feed = await buildReleaseFeed(100);
+	return jsonResponse(request, 201, feed);
+}
+
+async function handleAdminUpdateRelease(request: Request, releaseId: string): Promise<Response> {
+	assertWithinRateLimit(request, "admin:releases:update", AUTH_SESSION_RATE_LIMIT);
+	await requirePrivilegedSession(request);
+	const payload = parseAdminUpdateReleasePayload(await readRequestJson(request));
+	await updateReleaseByAdmin(releaseId, payload);
+	const feed = await buildReleaseFeed(100);
+	return jsonResponse(request, 200, feed);
+}
+
+async function handleAdminDeleteRelease(request: Request, releaseId: string): Promise<Response> {
+	assertWithinRateLimit(request, "admin:releases:delete", AUTH_SESSION_RATE_LIMIT);
+	await requirePrivilegedSession(request);
+	const deletedArtifacts = await deleteReleaseByAdmin(releaseId);
+	const response: AdminDeleteReleaseResponse = {
+		deleted: true,
+		deletedArtifacts,
+	};
+	return jsonResponse(request, 200, response);
+}
+
+async function handleAdminUploadReleaseArtifact(
+	request: Request,
+	releaseId: string,
+): Promise<Response> {
+	assertWithinRateLimit(request, "admin:artifacts:create", AUTH_SESSION_RATE_LIMIT);
+	await requirePrivilegedSession(request);
+	const formData = await readRequestFormData(request);
+	await uploadReleaseArtifactByAdmin(releaseId, formData);
+	const feed = await buildReleaseFeed(100);
+	return jsonResponse(request, 201, feed);
+}
+
+async function handleAdminUpdateReleaseArtifact(
+	request: Request,
+	artifactId: string,
+): Promise<Response> {
+	assertWithinRateLimit(request, "admin:artifacts:update", AUTH_SESSION_RATE_LIMIT);
+	await requirePrivilegedSession(request);
+	const payload = parseAdminUpdateArtifactPayload(await readRequestJson(request));
+	await updateReleaseArtifactByAdmin(artifactId, payload);
+	const feed = await buildReleaseFeed(100);
+	return jsonResponse(request, 200, feed);
+}
+
+async function handleAdminDeleteReleaseArtifact(
+	request: Request,
+	artifactId: string,
+): Promise<Response> {
+	assertWithinRateLimit(request, "admin:artifacts:delete", AUTH_SESSION_RATE_LIMIT);
+	await requirePrivilegedSession(request);
+	await deleteReleaseArtifactByAdmin(artifactId);
+	const response: AdminDeleteArtifactResponse = { deleted: true };
+	return jsonResponse(request, 200, response);
+}
+
 async function handleReleasesFeed(request: Request): Promise<Response> {
 	const feed = await buildReleaseFeed();
 	return jsonResponse(request, 200, feed);
@@ -1684,6 +2260,66 @@ async function routeRequest(request: Request): Promise<Response> {
 
 	if (!url.pathname.startsWith(AUTH_BASE_PATH)) {
 		return jsonResponse(request, 404, buildErrorResponse("Not Found"));
+	}
+
+	if (request.method === "GET" && url.pathname === `${AUTH_ADMIN_BASE_PATH}/releases`) {
+		return handleAdminListReleases(request);
+	}
+
+	if (request.method === "POST" && url.pathname === `${AUTH_ADMIN_BASE_PATH}/releases`) {
+		return handleAdminCreateRelease(request);
+	}
+
+	const adminReleaseArtifactMatch = url.pathname.match(
+		new RegExp(`^${AUTH_ADMIN_BASE_PATH}/releases/([^/]+)/artifacts$`),
+	);
+
+	if (adminReleaseArtifactMatch && request.method === "POST") {
+		const releaseId = decodeURIComponent(adminReleaseArtifactMatch[1] ?? "");
+		if (!releaseId) {
+			throw new HttpError(400, "Release id is required.");
+		}
+		return handleAdminUploadReleaseArtifact(request, releaseId);
+	}
+
+	const adminReleaseMatch = url.pathname.match(
+		new RegExp(`^${AUTH_ADMIN_BASE_PATH}/releases/([^/]+)$`),
+	);
+
+	if (adminReleaseMatch && request.method === "PATCH") {
+		const releaseId = decodeURIComponent(adminReleaseMatch[1] ?? "");
+		if (!releaseId) {
+			throw new HttpError(400, "Release id is required.");
+		}
+		return handleAdminUpdateRelease(request, releaseId);
+	}
+
+	if (adminReleaseMatch && request.method === "DELETE") {
+		const releaseId = decodeURIComponent(adminReleaseMatch[1] ?? "");
+		if (!releaseId) {
+			throw new HttpError(400, "Release id is required.");
+		}
+		return handleAdminDeleteRelease(request, releaseId);
+	}
+
+	const adminArtifactMatch = url.pathname.match(
+		new RegExp(`^${AUTH_ADMIN_BASE_PATH}/artifacts/([^/]+)$`),
+	);
+
+	if (adminArtifactMatch && request.method === "PATCH") {
+		const artifactId = decodeURIComponent(adminArtifactMatch[1] ?? "");
+		if (!artifactId) {
+			throw new HttpError(400, "Artifact id is required.");
+		}
+		return handleAdminUpdateReleaseArtifact(request, artifactId);
+	}
+
+	if (adminArtifactMatch && request.method === "DELETE") {
+		const artifactId = decodeURIComponent(adminArtifactMatch[1] ?? "");
+		if (!artifactId) {
+			throw new HttpError(400, "Artifact id is required.");
+		}
+		return handleAdminDeleteReleaseArtifact(request, artifactId);
 	}
 
 	if (request.method === "GET" && url.pathname === `${AUTH_ADMIN_BASE_PATH}/users`) {

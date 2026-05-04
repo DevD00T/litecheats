@@ -2,10 +2,10 @@
 
 import { createConnection } from "node:net";
 
-const DEV_SERVER_URL = Bun.env.APPBUN_URL ?? "http://localhost:5173";
+const DEV_SERVER_URL = Bun.env.APPBUN_URL ?? "http://localhost:8080";
 const DEV_SERVER_PORT = resolvePort(DEV_SERVER_URL);
 const WRAPPER_DIR = Bun.env.APPBUN_OUT_DIR ?? "./litecheats";
-const WEB_SCRIPT = "web";
+const WEB_SCRIPT = Bun.env.APPBUN_HMR_WEB_SCRIPT ?? "web:fullstack";
 
 interface ProcessHandle {
 	name: string;
@@ -18,7 +18,7 @@ function resolvePort(url: string): number {
 		if (parsed.port) return Number(parsed.port);
 		return parsed.protocol === "https:" ? 443 : 80;
 	} catch {
-		return 5173;
+		return 8080;
 	}
 }
 

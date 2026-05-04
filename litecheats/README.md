@@ -1,6 +1,6 @@
 # Litecheats
 
-Generated with [appbun](https://github.com/bigmacfive/appbun). This project wraps http://localhost:5173/ in an Electrobun desktop shell.
+Generated with [appbun](https://github.com/bigmacfive/appbun). This project wraps http://localhost:8080/ in an Electrobun desktop shell.
 
 ## Commands
 
@@ -15,7 +15,7 @@ bun run build:dmg
 
 - App name: `Litecheats`
 - Identifier: `localhost.litecheats`
-- Source URL: [http://localhost:5173/](http://localhost:5173/)
+- Source URL: [http://localhost:8080/](http://localhost:8080/)
 - Theme color: `#bc246e`
 - Titlebar preset: `unified`
 - Window size: `1440x900`
