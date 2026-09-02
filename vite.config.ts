@@ -18,5 +18,10 @@ export default defineConfig({
 	server: {
 		port: 5173,
 		strictPort: true,
+		proxy: {
+			"/login": { target: "http://localhost:8787", changeOrigin: true },
+			"/downloads": { target: "http://localhost:8787", changeOrigin: true },
+			"/api/status": { target: "http://localhost:8787", changeOrigin: true },
+		},
 	},
 });

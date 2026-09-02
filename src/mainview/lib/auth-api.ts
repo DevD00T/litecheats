@@ -9,12 +9,15 @@ import {
 	type AuthSuccessResponse,
 	type LoginPayload,
 	type LogoutAllSessionsResponse,
+	type ResendVerificationResponse,
 	type RevokeSessionPayload,
 	type RevokeSessionResponse,
 	type SessionListResponse,
 	type SessionResponse,
 	type SignupPayload,
 	type UpdateProfilePayload,
+	type VerifyEmailPayload,
+	type VerifyEmailResponse,
 } from "shared/auth";
 import type {
 	AdminCreateReleasePayload,
@@ -111,6 +114,15 @@ export const authApi = {
 		}),
 	logoutAllSessions: () =>
 		authRequest<LogoutAllSessionsResponse>("/logout-all", {
+			method: "POST",
+		}),
+	verifyEmail: (payload: VerifyEmailPayload) =>
+		authRequest<VerifyEmailResponse>("/verify-email", {
+			method: "POST",
+			body: JSON.stringify(payload),
+		}),
+	resendVerification: () =>
+		authRequest<ResendVerificationResponse>("/verify-email/resend", {
 			method: "POST",
 		}),
 	getSession: () => authRequest<SessionResponse>("/session"),

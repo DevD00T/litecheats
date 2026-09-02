@@ -1,6 +1,13 @@
 import { Bot, bold, format, link, webhookHandler } from "gramio";
-import type { Collection, Document, WithId } from "mongodb";
-import { getAuthDb } from "./auth-server";
+import {
+	type TelegramAdminDocument,
+	type WithId,
+	findTelegramAdminByUsernameLower,
+	getDb,
+	listTelegramAdminsSorted,
+	seedTelegramAdminsFromEnv,
+	upsertTelegramAdmin,
+} from "./db";
 
 const TELEGRAM_WEBHOOK_PATH_DEFAULT = "/telegram-webhook";
 const TELEGRAM_USERNAME_PATTERN = /^[a-zA-Z0-9_]{5,32}$/;
@@ -35,18 +42,6 @@ interface TelegramBotStartOptions {
 }
 
 type TelegramWebhookRequestHandler = (request: Request) => Promise<Response> | Response;
-type TelegramRole = "admin" | "owner";
-
-interface TelegramAdminDocument extends Document {
-	_id: string;
-	username: string;
-	usernameLower: string;
-	role: TelegramRole;
-	addedByTelegramId: number | null;
-	addedByUsername: string | null;
-	createdAt: Date;
-	updatedAt: Date;
-}
 
 interface TelegramUserLike {
 	id?: number;
@@ -149,39 +144,10 @@ async function pingUrl(url: string): Promise<HttpPingResult> {
 	}
 }
 
-async function getTelegramAdminsCollection(): Promise<Collection<TelegramAdminDocument>> {
-	const db = await getAuthDb();
-	return db.collection<TelegramAdminDocument>("telegram_admins");
-}
-
 async function seedTelegramAdmins(): Promise<void> {
 	if (!TELEGRAM_ADMIN_USERNAMES.length) return;
-
-	const admins = await getTelegramAdminsCollection();
-	const now = new Date();
-
-	await Promise.all(
-		TELEGRAM_ADMIN_USERNAMES.map((username) =>
-			admins.updateOne(
-				{ usernameLower: getTelegramUsernameLower(username) },
-				{
-					$setOnInsert: {
-						_id: crypto.randomUUID(),
-						username,
-						usernameLower: getTelegramUsernameLower(username),
-						role: "owner",
-						addedByTelegramId: null,
-						addedByUsername: "env",
-						createdAt: now,
-					},
-					$set: {
-						updatedAt: now,
-					},
-				},
-				{ upsert: true },
-			),
-		),
-	);
+	await getDb();
+	seedTelegramAdminsFromEnv(TELEGRAM_ADMIN_USERNAMES);
 }
 
 async function findTelegramAdminByUsername(
@@ -190,8 +156,8 @@ async function findTelegramAdminByUsername(
 	const normalized = username ? normalizeTelegramUsername(username) : null;
 	if (!normalized) return null;
 
-	const admins = await getTelegramAdminsCollection();
-	return admins.findOne({ usernameLower: getTelegramUsernameLower(normalized) });
+	await getDb();
+	return findTelegramAdminByUsernameLower(getTelegramUsernameLower(normalized));
 }
 
 async function hasTelegramAdminAccess(from: TelegramUserLike | undefined): Promise<boolean> {
@@ -201,8 +167,8 @@ async function hasTelegramAdminAccess(from: TelegramUserLike | undefined): Promi
 
 async function listTelegramAdmins(): Promise<WithId<TelegramAdminDocument>[]> {
 	await seedTelegramAdmins();
-	const admins = await getTelegramAdminsCollection();
-	return admins.find().sort({ role: -1, usernameLower: 1 }).toArray();
+	await getDb();
+	return listTelegramAdminsSorted();
 }
 
 async function addTelegramAdmin(
@@ -214,38 +180,8 @@ async function addTelegramAdmin(
 		throw new Error("Send a valid Telegram username, for example /admins add @username.");
 	}
 
-	const admins = await getTelegramAdminsCollection();
-	const now = new Date();
-	const usernameLower = getTelegramUsernameLower(normalized);
-	const existing = await admins.findOneAndUpdate(
-		{ usernameLower },
-		{
-			$setOnInsert: {
-				_id: crypto.randomUUID(),
-				username: normalized,
-				usernameLower,
-				role: "admin",
-				addedByTelegramId: addedBy?.id ?? null,
-				addedByUsername: addedBy?.username ?? null,
-				createdAt: now,
-			},
-			$set: {
-				updatedAt: now,
-			},
-		},
-		{ upsert: true, returnDocument: "before" },
-	);
-
-	if (existing) {
-		return { admin: existing, created: false };
-	}
-
-	const admin = await admins.findOne({ usernameLower });
-	if (!admin) {
-		throw new Error("Telegram admin was not saved. Please try again.");
-	}
-
-	return { admin, created: true };
+	await getDb();
+	return upsertTelegramAdmin(normalized, addedBy?.id ?? null, addedBy?.username ?? null);
 }
 
 async function handleAdminsCommand(ctx: TelegramCommandContext): Promise<unknown> {

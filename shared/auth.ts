@@ -15,6 +15,7 @@ export interface AuthUser {
 	company: string;
 	isAdmin: boolean;
 	isOwner: boolean;
+	emailVerified: boolean;
 	roles: UserRole[];
 	createdAt: string;
 	updatedAt: string;
@@ -109,4 +110,17 @@ export interface AdminUpdateUserPayload {
 
 export interface AdminDeleteUserResponse {
 	deleted: true;
+}
+
+export interface VerifyEmailPayload {
+	token: string;
+}
+
+export interface VerifyEmailResponse {
+	verified: true;
+	email: string;
+}
+
+export interface ResendVerificationResponse {
+	sent: true;
 }

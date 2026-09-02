@@ -1,15 +1,5 @@
 import { createHash } from "node:crypto";
-import { Readable } from "node:stream";
 import { Elysia } from "elysia";
-import {
-	type Db,
-	type Document,
-	GridFSBucket,
-	MongoClient,
-	MongoServerError,
-	ObjectId,
-	type WithId,
-} from "mongodb";
 import {
 	AUTH_ADMIN_BASE_PATH,
 	AUTH_API_PORT,
@@ -28,6 +18,7 @@ import {
 	DEFAULT_USER_ROLE,
 	type LoginPayload,
 	type LogoutAllSessionsResponse,
+	type ResendVerificationResponse,
 	type RevokeSessionPayload,
 	type RevokeSessionResponse,
 	type SessionListResponse,
@@ -36,6 +27,8 @@ import {
 	USER_ROLES,
 	type UpdateProfilePayload,
 	type UserRole,
+	type VerifyEmailPayload,
+	type VerifyEmailResponse,
 } from "../../shared/auth";
 import {
 	type AdminCreateReleasePayload,
@@ -44,7 +37,6 @@ import {
 	type AdminUpdateArtifactPayload,
 	type AdminUpdateReleasePayload,
 	DOWNLOADS_BASE_PATH,
-	RELEASE_FILES_BUCKET,
 	RELEASE_FORMATS,
 	RELEASE_PLATFORMS,
 	type ReleaseArtifactSummary,
@@ -53,9 +45,64 @@ import {
 	type ReleasePlatform,
 	type ReleaseSummary,
 } from "../../shared/releases";
+import {
+	STATUS_BASE_PATH,
+	type StatusComponent,
+	type StatusLevel,
+	type StatusSummaryResponse,
+} from "../../shared/status";
+import {
+	type ReleaseArtifactDocument,
+	type ReleaseVersionDocument,
+	type SessionDocument,
+	type UserDocument,
+	type WithId,
+	countActiveSessionsForDevice,
+	countActiveSessionsForUser,
+	deleteAllSessionsForUser as dbDeleteAllSessionsForUserId,
+	deleteSessionsByUserId as dbDeleteSessionsByUserId,
+	listActiveSessionsForUser as dbListActiveSessionsForUser,
+	deleteArtifactById,
+	deleteArtifactsByReleaseId,
+	deleteEmailVerificationToken,
+	deleteEmailVerificationTokensForUser,
+	deleteExpiredSessionsForUser,
+	deleteReleaseById,
+	deleteSessionById,
+	deleteSessionByIdForUser,
+	deleteUserById,
+	findAnyLatestRelease,
+	findArtifactBlobById,
+	findArtifactByLookup,
+	findArtifactMetaById,
+	findConflictingArtifact,
+	findEmailVerificationToken,
+	findMostRecentReleaseByPublishedDesc,
+	findReleaseById,
+	findSessionById,
+	findUserByEmailLower,
+	findUserById,
+	getDb,
+	insertArtifact,
+	insertEmailVerificationToken,
+	insertRelease,
+	insertSession,
+	insertUser,
+	isUniqueConstraintError,
+	listAllUsersSortedByCreatedDesc,
+	listArtifactMetaByReleaseIds,
+	listReleasesSortedByPublishedDesc,
+	setReleaseLatest,
+	touchSession,
+	uniqueConstraintColumn,
+	unsetLatestExcept,
+	updateArtifactFields,
+	updateArtifactVersionForRelease,
+	updateReleaseFields,
+	updateUserFields,
+} from "./db";
+import { sendVerificationEmail } from "./email";
 
-const DEFAULT_MONGODB_URI = "mongodb://127.0.0.1:27017";
-const DEFAULT_MONGODB_DB_NAME = "litecheats";
 const ONE_DAY_MS = AUTH_COOKIE_MAX_AGE_SECONDS * 1000;
 const SESSION_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -68,6 +115,7 @@ const REQUEST_JSON_MAX_BYTES = 64 * 1024;
 const DEFAULT_USER_AGENT = "unknown";
 const DEFAULT_CLIENT_IP = "unknown";
 const AUTH_MAX_ACTIVE_SESSIONS_PER_USER = Number(Bun.env.AUTH_MAX_ACTIVE_SESSIONS_PER_USER ?? 10);
+const AUTH_MAX_SESSIONS_PER_DEVICE = Number(Bun.env.AUTH_MAX_SESSIONS_PER_DEVICE ?? 2);
 const AUTH_RATE_LIMIT_WINDOW_MS = Number(Bun.env.AUTH_RATE_LIMIT_WINDOW_MS ?? 60_000);
 const AUTH_LOGIN_RATE_LIMIT = Number(Bun.env.AUTH_LOGIN_RATE_LIMIT ?? 20);
 const AUTH_SIGNUP_RATE_LIMIT = Number(Bun.env.AUTH_SIGNUP_RATE_LIMIT ?? 10);
@@ -81,6 +129,12 @@ const RELEASE_NOTES_MAX_LENGTH = 8000;
 const RELEASE_TARGET_MAX_LENGTH = 100;
 const RELEASE_FILENAME_MAX_LENGTH = 255;
 const RELEASE_UPLOAD_MAX_BYTES = Number(Bun.env.RELEASE_UPLOAD_MAX_BYTES ?? 1024 * 1024 * 1024);
+const AUTH_VERIFY_EMAIL_RATE_LIMIT = Number(Bun.env.AUTH_VERIFY_EMAIL_RATE_LIMIT ?? 10);
+const EMAIL_VERIFICATION_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
+const PUBLIC_APP_URL = (Bun.env.PUBLIC_APP_URL?.trim() || "http://localhost:8080").replace(
+	/\/+$/,
+	"",
+);
 
 interface RateLimitBucket {
 	count: number;
@@ -93,71 +147,7 @@ interface SessionRequestMeta {
 	deviceKey: string;
 }
 
-const mongoClient = new MongoClient(Bun.env.MONGODB_URI ?? DEFAULT_MONGODB_URI);
-const mongoDbName = Bun.env.MONGODB_DB_NAME ?? DEFAULT_MONGODB_DB_NAME;
-let dbPromise: Promise<Db> | null = null;
 const rateLimitStore = new Map<string, RateLimitBucket>();
-
-interface UserDocument extends Document {
-	_id: string;
-	email: string;
-	emailLower: string;
-	fullName: string;
-	company: string;
-	roles?: unknown;
-	isAdmin?: unknown;
-	isOwner?: unknown;
-	passwordHash: string;
-	createdAt: Date;
-	updatedAt: Date;
-}
-
-interface SessionDocument extends Document {
-	_id: string;
-	userId: string;
-	userAgent: string;
-	ipAddress: string;
-	deviceKey: string;
-	createdAt: Date;
-	updatedAt: Date;
-	expiresAt: Date;
-}
-
-interface ReleaseVersionDocument extends Document {
-	_id: string;
-	version: string;
-	notes: string;
-	publishedAt: Date;
-	isLatest: boolean;
-	createdAt: Date;
-	updatedAt: Date;
-}
-
-interface ReleaseArtifactDocument extends Document {
-	_id: string;
-	releaseId: string;
-	version: string;
-	platform: ReleasePlatform;
-	format: ReleaseFormat;
-	target: string;
-	filename: string;
-	sizeBytes: number;
-	sha256: string;
-	mimeType: string;
-	gridFsFileId: string;
-	createdAt: Date;
-}
-
-interface TelegramAdminDocument extends Document {
-	_id: string;
-	username: string;
-	usernameLower: string;
-	role: "admin" | "owner";
-	addedByTelegramId: number | null;
-	addedByUsername: string | null;
-	createdAt: Date;
-	updatedAt: Date;
-}
 
 class HttpError extends Error {
 	status: number;
@@ -174,6 +164,11 @@ const RELEASE_FORMAT_SET = new Set<ReleaseFormat>(RELEASE_FORMATS);
 function createUuidV7(): string {
 	const maybeUuidV7 = (Bun as unknown as { randomUUIDv7?: () => string }).randomUUIDv7;
 	return typeof maybeUuidV7 === "function" ? maybeUuidV7() : crypto.randomUUID();
+}
+
+function createVerificationToken(): string {
+	const bytes = crypto.getRandomValues(new Uint8Array(32));
+	return Buffer.from(bytes).toString("hex");
 }
 
 function normalizeEmail(email: string): string {
@@ -336,6 +331,7 @@ function toAuthUser(user: WithId<UserDocument>): AuthUser {
 		company: user.company,
 		isAdmin,
 		isOwner,
+		emailVerified: sanitizeRoleFlag(user.emailVerified),
 		roles,
 		createdAt: user.createdAt.toISOString(),
 		updatedAt: user.updatedAt.toISOString(),
@@ -547,6 +543,20 @@ function parseRevokeSessionPayload(payload: unknown): RevokeSessionPayload {
 	}
 
 	return { sessionId };
+}
+
+function parseVerifyEmailPayload(payload: unknown): VerifyEmailPayload {
+	if (!payload || typeof payload !== "object") {
+		throw new HttpError(400, "Invalid verification payload.");
+	}
+
+	const body = payload as Record<string, unknown>;
+	const token = typeof body.token === "string" ? body.token.trim() : "";
+	if (!token) {
+		throw new HttpError(400, "token is required.");
+	}
+
+	return { token };
 }
 
 function parseUpdatePayload(payload: unknown): UpdateProfilePayload {
@@ -829,305 +839,6 @@ async function readRequestFormData(request: Request): Promise<FormData> {
 	}
 }
 
-async function ensureCollection(db: Db, collectionName: string, validator: object): Promise<void> {
-	const exists = await db.listCollections({ name: collectionName }).hasNext();
-
-	if (!exists) {
-		await db.createCollection(collectionName, { validator });
-		return;
-	}
-
-	try {
-		await db.command({
-			collMod: collectionName,
-			validator,
-			validationLevel: "moderate",
-		});
-	} catch {
-		// Some managed MongoDB tiers restrict collMod; skip hard failure here.
-	}
-}
-
-async function ensureMongoSchema(db: Db): Promise<void> {
-	await ensureCollection(db, "users", {
-		$jsonSchema: {
-			bsonType: "object",
-			required: [
-				"_id",
-				"email",
-				"emailLower",
-				"fullName",
-				"company",
-				"isAdmin",
-				"isOwner",
-				"roles",
-				"passwordHash",
-				"createdAt",
-				"updatedAt",
-			],
-			properties: {
-				_id: { bsonType: "string" },
-				email: { bsonType: "string" },
-				emailLower: { bsonType: "string" },
-				fullName: { bsonType: "string" },
-				company: { bsonType: "string" },
-				isAdmin: { bsonType: "bool" },
-				isOwner: { bsonType: "bool" },
-				roles: {
-					bsonType: "array",
-					minItems: 1,
-					uniqueItems: true,
-					items: {
-						bsonType: "string",
-						enum: [...USER_ROLES],
-					},
-				},
-				passwordHash: { bsonType: "string" },
-				createdAt: { bsonType: "date" },
-				updatedAt: { bsonType: "date" },
-			},
-		},
-	});
-
-	await ensureCollection(db, "sessions", {
-		$jsonSchema: {
-			bsonType: "object",
-			required: [
-				"_id",
-				"userId",
-				"userAgent",
-				"ipAddress",
-				"deviceKey",
-				"createdAt",
-				"updatedAt",
-				"expiresAt",
-			],
-			properties: {
-				_id: { bsonType: "string" },
-				userId: { bsonType: "string" },
-				userAgent: { bsonType: "string" },
-				ipAddress: { bsonType: "string" },
-				deviceKey: { bsonType: "string" },
-				createdAt: { bsonType: "date" },
-				updatedAt: { bsonType: "date" },
-				expiresAt: { bsonType: "date" },
-			},
-		},
-	});
-
-	await ensureCollection(db, "release_versions", {
-		$jsonSchema: {
-			bsonType: "object",
-			required: ["_id", "version", "notes", "publishedAt", "isLatest", "createdAt", "updatedAt"],
-			properties: {
-				_id: { bsonType: "string" },
-				version: { bsonType: "string" },
-				notes: { bsonType: "string" },
-				publishedAt: { bsonType: "date" },
-				isLatest: { bsonType: "bool" },
-				createdAt: { bsonType: "date" },
-				updatedAt: { bsonType: "date" },
-			},
-		},
-	});
-
-	await ensureCollection(db, "release_artifacts", {
-		$jsonSchema: {
-			bsonType: "object",
-			required: [
-				"_id",
-				"releaseId",
-				"version",
-				"platform",
-				"format",
-				"target",
-				"filename",
-				"sizeBytes",
-				"sha256",
-				"mimeType",
-				"gridFsFileId",
-				"createdAt",
-			],
-			properties: {
-				_id: { bsonType: "string" },
-				releaseId: { bsonType: "string" },
-				version: { bsonType: "string" },
-				platform: { bsonType: "string" },
-				format: { bsonType: "string" },
-				target: { bsonType: "string" },
-				filename: { bsonType: "string" },
-				sizeBytes: { bsonType: ["int", "long", "double", "decimal"] },
-				sha256: { bsonType: "string" },
-				mimeType: { bsonType: "string" },
-				gridFsFileId: { bsonType: "string" },
-				createdAt: { bsonType: "date" },
-			},
-		},
-	});
-
-	await ensureCollection(db, "telegram_admins", {
-		$jsonSchema: {
-			bsonType: "object",
-			required: [
-				"_id",
-				"username",
-				"usernameLower",
-				"role",
-				"addedByTelegramId",
-				"addedByUsername",
-				"createdAt",
-				"updatedAt",
-			],
-			properties: {
-				_id: { bsonType: "string" },
-				username: { bsonType: "string" },
-				usernameLower: { bsonType: "string" },
-				role: {
-					bsonType: "string",
-					enum: ["admin", "owner"],
-				},
-				addedByTelegramId: { bsonType: ["long", "int", "double", "null"] },
-				addedByUsername: { bsonType: ["string", "null"] },
-				createdAt: { bsonType: "date" },
-				updatedAt: { bsonType: "date" },
-			},
-		},
-	});
-
-	const users = db.collection<UserDocument>("users");
-	const sessions = db.collection<SessionDocument>("sessions");
-	const releaseVersions = db.collection<ReleaseVersionDocument>("release_versions");
-	const releaseArtifacts = db.collection<ReleaseArtifactDocument>("release_artifacts");
-	const telegramAdmins = db.collection<TelegramAdminDocument>("telegram_admins");
-
-	const migrationTimestamp = new Date();
-	await users.updateMany(
-		{ isAdmin: { $exists: false } },
-		{ $set: { isAdmin: false, updatedAt: migrationTimestamp } },
-	);
-	await users.updateMany(
-		{ isOwner: { $exists: false } },
-		{ $set: { isOwner: false, updatedAt: migrationTimestamp } },
-	);
-	await users.updateMany(
-		{
-			$and: [{ isAdmin: { $not: { $type: "bool" } } }, { isAdmin: { $exists: true } }],
-		},
-		{ $set: { isAdmin: false, updatedAt: migrationTimestamp } },
-	);
-	await users.updateMany(
-		{
-			$and: [{ isOwner: { $not: { $type: "bool" } } }, { isOwner: { $exists: true } }],
-		},
-		{ $set: { isOwner: false, updatedAt: migrationTimestamp } },
-	);
-	await users.updateMany(
-		{ roles: { $exists: false } },
-		{ $set: { roles: [DEFAULT_USER_ROLE], updatedAt: migrationTimestamp } },
-	);
-
-	await users.updateMany({ roles: { $type: "array" } }, [
-		{
-			$set: {
-				roles: {
-					$let: {
-						vars: {
-							filteredRoles: {
-								$filter: {
-									input: "$roles",
-									as: "role",
-									cond: { $in: ["$$role", [...USER_ROLES]] },
-								},
-							},
-						},
-						in: {
-							$cond: [
-								{ $gt: [{ $size: "$$filteredRoles" }, 0] },
-								{ $setUnion: ["$$filteredRoles", []] },
-								[DEFAULT_USER_ROLE],
-							],
-						},
-					},
-				},
-			},
-		},
-	]);
-
-	await users.updateMany(
-		{
-			$and: [{ roles: { $not: { $type: "array" } } }, { roles: { $exists: true } }],
-		},
-		{ $set: { roles: [DEFAULT_USER_ROLE], updatedAt: migrationTimestamp } },
-	);
-	const fallbackDeviceKey = createHash("sha256")
-		.update(`${DEFAULT_USER_AGENT}|na|na|na`)
-		.digest("hex");
-	await sessions.updateMany(
-		{ userAgent: { $exists: false } },
-		{ $set: { userAgent: DEFAULT_USER_AGENT, updatedAt: migrationTimestamp } },
-	);
-	await sessions.updateMany(
-		{ ipAddress: { $exists: false } },
-		{ $set: { ipAddress: DEFAULT_CLIENT_IP, updatedAt: migrationTimestamp } },
-	);
-	await sessions.updateMany(
-		{ deviceKey: { $exists: false } },
-		{ $set: { deviceKey: fallbackDeviceKey, updatedAt: migrationTimestamp } },
-	);
-
-	await users.createIndex({ emailLower: 1 }, { unique: true, name: "users_email_unique" });
-	await users.createIndex({ roles: 1 }, { name: "users_roles_idx" });
-	await sessions.createIndex({ userId: 1 }, { name: "sessions_user_id_idx" });
-	await sessions.createIndex(
-		{ userId: 1, deviceKey: 1, expiresAt: 1 },
-		{ name: "sessions_user_device_idx" },
-	);
-	await sessions.createIndex(
-		{ expiresAt: 1 },
-		{ expireAfterSeconds: 0, name: "sessions_ttl_expires_at_idx" },
-	);
-	await releaseVersions.createIndex(
-		{ version: 1 },
-		{ unique: true, name: "release_versions_unique" },
-	);
-	await releaseVersions.createIndex({ isLatest: 1 }, { name: "release_versions_latest_idx" });
-	await releaseVersions.createIndex(
-		{ publishedAt: -1 },
-		{ name: "release_versions_published_desc_idx" },
-	);
-	await releaseArtifacts.createIndex({ releaseId: 1 }, { name: "release_artifacts_release_idx" });
-	await releaseArtifacts.createIndex(
-		{ version: 1, platform: 1, format: 1, target: 1 },
-		{ name: "release_artifacts_lookup_idx" },
-	);
-	await telegramAdmins.createIndex(
-		{ usernameLower: 1 },
-		{ unique: true, name: "telegram_admins_username_unique" },
-	);
-}
-
-async function getDb(): Promise<Db> {
-	if (!dbPromise) {
-		const connectPromise = (async () => {
-			await mongoClient.connect();
-			const db = mongoClient.db(mongoDbName);
-			await ensureMongoSchema(db);
-			return db;
-		})();
-
-		dbPromise = connectPromise.catch((error) => {
-			dbPromise = null;
-			throw error;
-		});
-	}
-
-	return dbPromise;
-}
-
-export async function getAuthDb(): Promise<Db> {
-	return getDb();
-}
-
 function toReleaseArtifactSummary(
 	artifact: WithId<ReleaseArtifactDocument>,
 ): ReleaseArtifactSummary {
@@ -1162,20 +873,14 @@ function toReleaseSummary(
 }
 
 async function buildReleaseFeed(limit = 20): Promise<ReleaseFeedResponse> {
-	const db = await getDb();
-	const releases = db.collection<ReleaseVersionDocument>("release_versions");
-	const artifacts = db.collection<ReleaseArtifactDocument>("release_artifacts");
-
-	const releaseList = await releases.find().sort({ publishedAt: -1 }).limit(limit).toArray();
+	await getDb();
+	const releaseList = listReleasesSortedByPublishedDesc(limit);
 	if (!releaseList.length) {
 		return { latest: null, releases: [] };
 	}
 
 	const releaseIds = releaseList.map((item) => item._id);
-	const artifactList = await artifacts
-		.find({ releaseId: { $in: releaseIds } })
-		.sort({ createdAt: -1 })
-		.toArray();
+	const artifactList = listArtifactMetaByReleaseIds(releaseIds);
 
 	const artifactMap = new Map<string, WithId<ReleaseArtifactDocument>[]>();
 	for (const artifact of artifactList) {
@@ -1230,36 +935,29 @@ async function computeFileSha256(file: File): Promise<string> {
 }
 
 async function setLatestReleaseId(releaseId: string, now: Date): Promise<void> {
-	const db = await getDb();
-	const releases = db.collection<ReleaseVersionDocument>("release_versions");
-	await releases.updateMany(
-		{ _id: { $ne: releaseId }, isLatest: true },
-		{ $set: { isLatest: false, updatedAt: now } },
-	);
-	await releases.updateOne({ _id: releaseId }, { $set: { isLatest: true, updatedAt: now } });
+	await getDb();
+	unsetLatestExcept(releaseId, now);
+	setReleaseLatest(releaseId, true, now);
 }
 
 async function ensureAtLeastOneLatestRelease(now: Date): Promise<void> {
-	const db = await getDb();
-	const releases = db.collection<ReleaseVersionDocument>("release_versions");
-	const latest = await releases.findOne({ isLatest: true });
-	if (latest) return;
+	await getDb();
+	if (findAnyLatestRelease()) return;
 
-	const fallback = await releases.find().sort({ publishedAt: -1 }).limit(1).next();
+	const fallback = findMostRecentReleaseByPublishedDesc();
 	if (!fallback) return;
-	await releases.updateOne({ _id: fallback._id }, { $set: { isLatest: true, updatedAt: now } });
+	setReleaseLatest(fallback._id, true, now);
 }
 
 async function createReleaseByAdmin(payload: AdminCreateReleasePayload): Promise<void> {
-	const db = await getDb();
-	const releases = db.collection<ReleaseVersionDocument>("release_versions");
+	await getDb();
 	const now = new Date();
 	const releaseId = crypto.randomUUID();
 	const publishedAt = payload.publishedAt ? new Date(payload.publishedAt) : now;
 	const shouldBeLatest = payload.isLatest ?? true;
 
 	try {
-		await releases.insertOne({
+		insertRelease({
 			_id: releaseId,
 			version: payload.version,
 			notes: payload.notes ?? "",
@@ -1269,7 +967,7 @@ async function createReleaseByAdmin(payload: AdminCreateReleasePayload): Promise
 			updatedAt: now,
 		});
 	} catch (error) {
-		if (error instanceof MongoServerError && error.code === 11000) {
+		if (isUniqueConstraintError(error)) {
 			throw new HttpError(409, "A release with this version already exists.");
 		}
 		throw error;
@@ -1286,12 +984,10 @@ async function updateReleaseByAdmin(
 	releaseId: string,
 	payload: AdminUpdateReleasePayload,
 ): Promise<void> {
-	const db = await getDb();
-	const releases = db.collection<ReleaseVersionDocument>("release_versions");
-	const artifacts = db.collection<ReleaseArtifactDocument>("release_artifacts");
+	await getDb();
 	const now = new Date();
 
-	const current = await releases.findOne({ _id: releaseId });
+	const current = findReleaseById(releaseId);
 	if (!current) {
 		throw new HttpError(404, "Release not found.");
 	}
@@ -1302,57 +998,40 @@ async function updateReleaseByAdmin(
 	if (typeof payload.publishedAt === "string") patch.publishedAt = new Date(payload.publishedAt);
 
 	try {
-		await releases.updateOne({ _id: releaseId }, { $set: patch });
+		updateReleaseFields(releaseId, patch);
 	} catch (error) {
-		if (error instanceof MongoServerError && error.code === 11000) {
+		if (isUniqueConstraintError(error)) {
 			throw new HttpError(409, "A release with this version already exists.");
 		}
 		throw error;
 	}
 
 	if (typeof payload.version === "string" && payload.version !== current.version) {
-		await artifacts.updateMany(
-			{ releaseId },
-			{
-				$set: { version: payload.version },
-			},
-		);
+		updateArtifactVersionForRelease(releaseId, payload.version);
 	}
 
 	if (payload.isLatest === true) {
 		await setLatestReleaseId(releaseId, now);
 	} else if (payload.isLatest === false) {
-		await releases.updateOne({ _id: releaseId }, { $set: { isLatest: false, updatedAt: now } });
+		setReleaseLatest(releaseId, false, now);
 		await ensureAtLeastOneLatestRelease(now);
 	}
 }
 
 async function deleteReleaseByAdmin(releaseId: string): Promise<number> {
-	const db = await getDb();
-	const releases = db.collection<ReleaseVersionDocument>("release_versions");
-	const artifacts = db.collection<ReleaseArtifactDocument>("release_artifacts");
-	const bucket = new GridFSBucket(db, { bucketName: RELEASE_FILES_BUCKET });
+	await getDb();
 	const now = new Date();
 
-	const release = await releases.findOne({ _id: releaseId });
+	const release = findReleaseById(releaseId);
 	if (!release) {
 		throw new HttpError(404, "Release not found.");
 	}
 
-	const relatedArtifacts = await artifacts.find({ releaseId }).toArray();
-	for (const artifact of relatedArtifacts) {
-		try {
-			await bucket.delete(new ObjectId(artifact.gridFsFileId));
-		} catch {
-			// Ignore stale GridFS references during cleanup.
-		}
-	}
-
-	const artifactDelete = await artifacts.deleteMany({ releaseId });
-	await releases.deleteOne({ _id: releaseId });
+	const deletedArtifacts = deleteArtifactsByReleaseId(releaseId);
+	deleteReleaseById(releaseId);
 	await ensureAtLeastOneLatestRelease(now);
 
-	return artifactDelete.deletedCount;
+	return deletedArtifacts;
 }
 
 async function uploadReleaseArtifactByAdmin(releaseId: string, formData: FormData): Promise<void> {
@@ -1368,11 +1047,8 @@ async function uploadReleaseArtifactByAdmin(releaseId: string, formData: FormDat
 		throw new HttpError(413, "Uploaded artifact is too large.");
 	}
 
-	const db = await getDb();
-	const releases = db.collection<ReleaseVersionDocument>("release_versions");
-	const artifacts = db.collection<ReleaseArtifactDocument>("release_artifacts");
-	const bucket = new GridFSBucket(db, { bucketName: RELEASE_FILES_BUCKET });
-	const release = await releases.findOne({ _id: releaseId });
+	await getDb();
+	const release = findReleaseById(releaseId);
 	if (!release) {
 		throw new HttpError(404, "Release not found.");
 	}
@@ -1386,63 +1062,38 @@ async function uploadReleaseArtifactByAdmin(releaseId: string, formData: FormDat
 	);
 	const now = new Date();
 
-	const existing = await artifacts.findOne({
-		releaseId,
-		platform,
-		format,
-		target,
-	});
-
+	const existing = findArtifactByLookup(releaseId, platform, format, target);
 	if (existing) {
-		try {
-			await bucket.delete(new ObjectId(existing.gridFsFileId));
-		} catch {
-			// Ignore stale GridFS references during replacement.
-		}
-		await artifacts.deleteOne({ _id: existing._id });
+		deleteArtifactById(existing._id);
 	}
 
 	const sha256 = await computeFileSha256(fileEntry);
-	const upload = bucket.openUploadStream(filename, {
-		metadata: {
+	const fileBuffer = new Uint8Array(await fileEntry.arrayBuffer());
+
+	insertArtifact(
+		{
+			_id: crypto.randomUUID(),
 			releaseId,
 			version: release.version,
 			platform,
 			format,
 			target,
+			filename,
+			sizeBytes: fileEntry.size,
 			sha256,
+			mimeType: resolveReleaseMimeType(format, fileEntry.type),
+			createdAt: now,
 		},
-	});
-	const fileBuffer = Buffer.from(await fileEntry.arrayBuffer());
-	await new Promise<void>((resolve, reject) => {
-		upload.once("finish", () => resolve());
-		upload.once("error", (error) => reject(error));
-		upload.end(fileBuffer);
-	});
-
-	await artifacts.insertOne({
-		_id: crypto.randomUUID(),
-		releaseId,
-		version: release.version,
-		platform,
-		format,
-		target,
-		filename,
-		sizeBytes: fileEntry.size,
-		sha256,
-		mimeType: resolveReleaseMimeType(format, fileEntry.type),
-		gridFsFileId: (upload.id as ObjectId).toHexString(),
-		createdAt: now,
-	});
+		fileBuffer,
+	);
 }
 
 async function updateReleaseArtifactByAdmin(
 	artifactId: string,
 	payload: AdminUpdateArtifactPayload,
 ): Promise<void> {
-	const db = await getDb();
-	const artifacts = db.collection<ReleaseArtifactDocument>("release_artifacts");
-	const existing = await artifacts.findOne({ _id: artifactId });
+	await getDb();
+	const existing = findArtifactMetaById(artifactId);
 	if (!existing) {
 		throw new HttpError(404, "Release artifact not found.");
 	}
@@ -1451,13 +1102,13 @@ async function updateReleaseArtifactByAdmin(
 	const nextFormat = payload.format ?? existing.format;
 	const nextTarget = payload.target ?? existing.target;
 
-	const conflicting = await artifacts.findOne({
-		_id: { $ne: artifactId },
-		releaseId: existing.releaseId,
-		platform: nextPlatform,
-		format: nextFormat,
-		target: nextTarget,
-	});
+	const conflicting = findConflictingArtifact(
+		artifactId,
+		existing.releaseId,
+		nextPlatform,
+		nextFormat,
+		nextTarget,
+	);
 	if (conflicting) {
 		throw new HttpError(
 			409,
@@ -1479,33 +1130,24 @@ async function updateReleaseArtifactByAdmin(
 		patch.mimeType = resolveReleaseMimeType(patch.format);
 	}
 
-	await artifacts.updateOne({ _id: artifactId }, { $set: patch });
+	updateArtifactFields(artifactId, patch);
 }
 
 async function deleteReleaseArtifactByAdmin(artifactId: string): Promise<void> {
-	const db = await getDb();
-	const artifacts = db.collection<ReleaseArtifactDocument>("release_artifacts");
-	const bucket = new GridFSBucket(db, { bucketName: RELEASE_FILES_BUCKET });
-	const existing = await artifacts.findOne({ _id: artifactId });
+	await getDb();
+	const existing = findArtifactMetaById(artifactId);
 	if (!existing) {
 		throw new HttpError(404, "Release artifact not found.");
 	}
 
-	try {
-		await bucket.delete(new ObjectId(existing.gridFsFileId));
-	} catch {
-		// Ignore stale GridFS references during cleanup.
-	}
-
-	await artifacts.deleteOne({ _id: artifactId });
+	deleteArtifactById(artifactId);
 }
 
 async function getReleaseArtifactById(
 	artifactId: string,
 ): Promise<WithId<ReleaseArtifactDocument> | null> {
-	const db = await getDb();
-	const artifacts = db.collection<ReleaseArtifactDocument>("release_artifacts");
-	return artifacts.findOne({ _id: artifactId });
+	await getDb();
+	return findArtifactMetaById(artifactId);
 }
 
 async function buildDownloadResponse(request: Request, artifactId: string): Promise<Response> {
@@ -1514,17 +1156,8 @@ async function buildDownloadResponse(request: Request, artifactId: string): Prom
 		throw new HttpError(404, "Release artifact not found.");
 	}
 
-	let objectId: ObjectId;
-	try {
-		objectId = new ObjectId(artifact.gridFsFileId);
-	} catch {
-		throw new HttpError(500, "Artifact storage reference is invalid.");
-	}
-
-	const db = await getDb();
-	const bucket = new GridFSBucket(db, { bucketName: RELEASE_FILES_BUCKET });
-	const exists = await bucket.find({ _id: objectId }).limit(1).next();
-	if (!exists) {
+	const blob = findArtifactBlobById(artifactId);
+	if (!blob) {
 		throw new HttpError(404, "Artifact file content not found.");
 	}
 
@@ -1537,17 +1170,14 @@ async function buildDownloadResponse(request: Request, artifactId: string): Prom
 	headers.set("Content-Length", String(artifact.sizeBytes));
 	headers.set("Cache-Control", "public, max-age=300, immutable");
 
-	const stream = bucket.openDownloadStream(objectId);
-	return new Response(Readable.toWeb(stream) as unknown as BodyInit, {
+	return new Response(Buffer.from(blob), {
 		status: 200,
 		headers,
 	});
 }
 
 async function createUser(payload: SignupPayload): Promise<WithId<UserDocument>> {
-	const db = await getDb();
-	const users = db.collection<UserDocument>("users");
-
+	await getDb();
 	const now = new Date();
 	const passwordHash = await Bun.password.hash(payload.password);
 
@@ -1559,6 +1189,7 @@ async function createUser(payload: SignupPayload): Promise<WithId<UserDocument>>
 		company: payload.company.trim(),
 		isAdmin: false,
 		isOwner: false,
+		emailVerified: false,
 		roles: [DEFAULT_USER_ROLE],
 		passwordHash,
 		createdAt: now,
@@ -1566,9 +1197,9 @@ async function createUser(payload: SignupPayload): Promise<WithId<UserDocument>>
 	};
 
 	try {
-		await users.insertOne(user);
+		insertUser(user);
 	} catch (error) {
-		if (error instanceof MongoServerError && error.code === 11000) {
+		if (isUniqueConstraintError(error)) {
 			throw new HttpError(409, "An account with this email already exists.");
 		}
 		throw error;
@@ -1577,10 +1208,19 @@ async function createUser(payload: SignupPayload): Promise<WithId<UserDocument>>
 	return user;
 }
 
+async function sendVerificationEmailToUser(user: WithId<UserDocument>): Promise<void> {
+	await getDb();
+	const token = createVerificationToken();
+	const expiresAt = new Date(Date.now() + EMAIL_VERIFICATION_TOKEN_TTL_MS);
+	deleteEmailVerificationTokensForUser(user._id);
+	insertEmailVerificationToken(token, user._id, expiresAt);
+	const verifyUrl = `${PUBLIC_APP_URL}/verify-email?token=${encodeURIComponent(token)}`;
+	await sendVerificationEmail(user.email, user.fullName, verifyUrl);
+}
+
 async function findUserByEmail(email: string): Promise<WithId<UserDocument> | null> {
-	const db = await getDb();
-	const users = db.collection<UserDocument>("users");
-	return users.findOne({ emailLower: normalizeEmail(email) });
+	await getDb();
+	return findUserByEmailLower(normalizeEmail(email));
 }
 
 function toAuthSession(session: WithId<SessionDocument>, currentSessionId: string): AuthSession {
@@ -1605,31 +1245,19 @@ async function createSession(
 	userId: string,
 	meta: SessionRequestMeta,
 ): Promise<WithId<SessionDocument>> {
-	const db = await getDb();
-	const sessions = db.collection<SessionDocument>("sessions");
-
+	await getDb();
 	const now = new Date();
-	await sessions.deleteMany({
-		userId,
-		expiresAt: { $lte: now },
-	});
+	deleteExpiredSessionsForUser(userId, now);
 
-	const existingDeviceSession = await sessions.findOne({
-		userId,
-		deviceKey: meta.deviceKey,
-		expiresAt: { $gt: now },
-	});
-	if (existingDeviceSession) {
+	const activeDeviceSessionCount = countActiveSessionsForDevice(userId, meta.deviceKey, now);
+	if (activeDeviceSessionCount >= AUTH_MAX_SESSIONS_PER_DEVICE) {
 		throw new HttpError(
 			409,
-			"This device already has an active session. Log out from that session before signing in again.",
+			`This device already has ${AUTH_MAX_SESSIONS_PER_DEVICE} active session(s). Log out from one before signing in again.`,
 		);
 	}
 
-	const activeSessionCount = await sessions.countDocuments({
-		userId,
-		expiresAt: { $gt: now },
-	});
+	const activeSessionCount = countActiveSessionsForUser(userId, now);
 	if (activeSessionCount >= AUTH_MAX_ACTIVE_SESSIONS_PER_USER) {
 		throw new HttpError(
 			429,
@@ -1648,52 +1276,34 @@ async function createSession(
 		expiresAt: new Date(now.getTime() + ONE_DAY_MS),
 	};
 
-	await sessions.insertOne(session);
+	insertSession(session);
 	return session;
 }
 
 async function deleteSession(sessionId: string): Promise<void> {
-	const db = await getDb();
-	const sessions = db.collection<SessionDocument>("sessions");
-	await sessions.deleteOne({ _id: sessionId });
-}
-
-async function deleteSessionsByUserId(userId: string): Promise<void> {
-	const db = await getDb();
-	const sessions = db.collection<SessionDocument>("sessions");
-	await sessions.deleteMany({ userId });
+	await getDb();
+	deleteSessionById(sessionId);
 }
 
 async function deleteSessionForUser(userId: string, sessionId: string): Promise<boolean> {
-	const db = await getDb();
-	const sessions = db.collection<SessionDocument>("sessions");
-	const result = await sessions.deleteOne({ _id: sessionId, userId });
-	return result.deletedCount > 0;
+	await getDb();
+	return deleteSessionByIdForUser(sessionId, userId);
 }
 
 async function deleteAllSessionsForUser(userId: string): Promise<number> {
-	const db = await getDb();
-	const sessions = db.collection<SessionDocument>("sessions");
-	const result = await sessions.deleteMany({ userId });
-	return result.deletedCount;
+	await getDb();
+	return dbDeleteAllSessionsForUserId(userId);
 }
 
 async function listActiveSessionsForUser(
 	userId: string,
 	currentSessionId: string,
 ): Promise<SessionListResponse> {
-	const db = await getDb();
-	const sessions = db.collection<SessionDocument>("sessions");
+	await getDb();
 	const now = new Date();
-	await sessions.deleteMany({ userId, expiresAt: { $lte: now } });
+	deleteExpiredSessionsForUser(userId, now);
 
-	const activeSessions = await sessions
-		.find({
-			userId,
-			expiresAt: { $gt: now },
-		})
-		.sort({ updatedAt: -1 })
-		.toArray();
+	const activeSessions = dbListActiveSessionsForUser(userId, now);
 
 	return {
 		sessions: activeSessions.map((session) => toAuthSession(session, currentSessionId)),
@@ -1704,28 +1314,26 @@ async function resolveSessionUser(request: Request): Promise<ResolvedSessionCont
 	const sessionId = getSessionIdFromRequest(request);
 	if (!sessionId) return null;
 
-	const db = await getDb();
-	const sessions = db.collection<SessionDocument>("sessions");
-	const users = db.collection<UserDocument>("users");
+	await getDb();
 	const now = Date.now();
 	const requestMeta = getSessionRequestMeta(request);
 
-	const session = await sessions.findOne({ _id: sessionId });
+	const session = findSessionById(sessionId);
 	if (!session) return null;
 
 	if (session.expiresAt.getTime() <= now) {
-		await sessions.deleteOne({ _id: session._id });
+		deleteSessionById(session._id);
 		return null;
 	}
 
 	if (session.deviceKey !== requestMeta.deviceKey) {
-		await sessions.deleteOne({ _id: session._id });
+		deleteSessionById(session._id);
 		return null;
 	}
 
-	const user = await users.findOne({ _id: session.userId });
+	const user = findUserById(session.userId);
 	if (!user) {
-		await sessions.deleteOne({ _id: session._id });
+		deleteSessionById(session._id);
 		return null;
 	}
 
@@ -1736,12 +1344,7 @@ async function resolveSessionUser(request: Request): Promise<ResolvedSessionCont
 			ipAddress: requestMeta.ipAddress,
 			userAgent: requestMeta.userAgent,
 		} satisfies Partial<SessionDocument>;
-		await sessions.updateOne(
-			{ _id: session._id },
-			{
-				$set: refreshed,
-			},
-		);
+		touchSession(session._id, refreshed);
 		session.updatedAt = refreshed.updatedAt ?? session.updatedAt;
 		session.expiresAt = refreshed.expiresAt ?? session.expiresAt;
 		session.userAgent = refreshed.userAgent ?? session.userAgent;
@@ -1755,15 +1358,13 @@ async function updateUser(
 	userId: string,
 	payload: UpdateProfilePayload,
 ): Promise<WithId<UserDocument>> {
-	const db = await getDb();
-	const users = db.collection<UserDocument>("users");
-
+	await getDb();
 	const patch: Partial<UserDocument> = { updatedAt: new Date() };
 	if (payload.fullName) patch.fullName = payload.fullName;
 	if (payload.company) patch.company = payload.company;
 
-	await users.updateOne({ _id: userId }, { $set: patch });
-	const updated = await users.findOne({ _id: userId });
+	updateUserFields(userId, patch);
+	const updated = findUserById(userId);
 	if (!updated) {
 		throw new HttpError(404, "User not found.");
 	}
@@ -1771,10 +1372,9 @@ async function updateUser(
 }
 
 async function deleteUser(userId: string): Promise<void> {
-	const db = await getDb();
-	const users = db.collection<UserDocument>("users");
-	await users.deleteOne({ _id: userId });
-	await deleteSessionsByUserId(userId);
+	await getDb();
+	deleteUserById(userId);
+	dbDeleteSessionsByUserId(userId);
 }
 
 async function requirePrivilegedSession(request: Request): Promise<ResolvedSessionContext> {
@@ -1791,30 +1391,9 @@ async function requirePrivilegedSession(request: Request): Promise<ResolvedSessi
 }
 
 async function listAdminUsers(): Promise<AdminUserListResponse> {
-	const db = await getDb();
-	const users = db.collection<UserDocument>("users");
-
-	const userDocs = await users
-		.find(
-			{},
-			{
-				projection: {
-					_id: 1,
-					email: 1,
-					fullName: 1,
-					company: 1,
-					roles: 1,
-					isAdmin: 1,
-					isOwner: 1,
-					createdAt: 1,
-					updatedAt: 1,
-				},
-			},
-		)
-		.sort({ createdAt: -1 })
-		.toArray();
-
-	const mappedUsers = userDocs.map((user) => toAuthUser(user as WithId<UserDocument>));
+	await getDb();
+	const userDocs = listAllUsersSortedByCreatedDesc();
+	const mappedUsers = userDocs.map((user) => toAuthUser(user));
 	const stats: AdminUserListStats = {
 		totalUsers: mappedUsers.length,
 		adminUsers: mappedUsers.filter((user) => user.isAdmin).length,
@@ -1828,9 +1407,7 @@ async function listAdminUsers(): Promise<AdminUserListResponse> {
 }
 
 async function createUserByAdmin(payload: AdminCreateUserPayload): Promise<WithId<UserDocument>> {
-	const db = await getDb();
-	const users = db.collection<UserDocument>("users");
-
+	await getDb();
 	const now = new Date();
 	const passwordHash = await Bun.password.hash(payload.password);
 	const userId = payload.id?.trim() || createUuidV7();
@@ -1843,6 +1420,7 @@ async function createUserByAdmin(payload: AdminCreateUserPayload): Promise<WithI
 		company: payload.company.trim(),
 		isAdmin: payload.isAdmin ?? false,
 		isOwner: payload.isOwner ?? false,
+		emailVerified: true,
 		roles: [DEFAULT_USER_ROLE],
 		passwordHash,
 		createdAt: now,
@@ -1850,11 +1428,10 @@ async function createUserByAdmin(payload: AdminCreateUserPayload): Promise<WithI
 	};
 
 	try {
-		await users.insertOne(user);
+		insertUser(user);
 	} catch (error) {
-		if (error instanceof MongoServerError && error.code === 11000) {
-			const keyPattern = error.keyPattern ? Object.keys(error.keyPattern)[0] : "";
-			if (keyPattern === "_id") {
+		if (isUniqueConstraintError(error)) {
+			if (uniqueConstraintColumn(error) === "id") {
 				throw new HttpError(409, "A user with this id already exists.");
 			}
 			throw new HttpError(409, "A user with this email already exists.");
@@ -1870,10 +1447,8 @@ async function updateUserByAdmin(
 	targetUserId: string,
 	payload: AdminUpdateUserPayload,
 ): Promise<WithId<UserDocument>> {
-	const db = await getDb();
-	const users = db.collection<UserDocument>("users");
-
-	const target = await users.findOne({ _id: targetUserId });
+	await getDb();
+	const target = findUserById(targetUserId);
 	if (!target) {
 		throw new HttpError(404, "User not found.");
 	}
@@ -1910,15 +1485,15 @@ async function updateUserByAdmin(
 	}
 
 	try {
-		await users.updateOne({ _id: targetUserId }, { $set: patch });
+		updateUserFields(targetUserId, patch);
 	} catch (error) {
-		if (error instanceof MongoServerError && error.code === 11000) {
+		if (isUniqueConstraintError(error)) {
 			throw new HttpError(409, "A user with this email already exists.");
 		}
 		throw error;
 	}
 
-	const updated = await users.findOne({ _id: targetUserId });
+	const updated = findUserById(targetUserId);
 	if (!updated) {
 		throw new HttpError(404, "User not found.");
 	}
@@ -1926,9 +1501,8 @@ async function updateUserByAdmin(
 }
 
 async function deleteUserByAdmin(actor: WithId<UserDocument>, targetUserId: string): Promise<void> {
-	const db = await getDb();
-	const users = db.collection<UserDocument>("users");
-	const target = await users.findOne({ _id: targetUserId });
+	await getDb();
+	const target = findUserById(targetUserId);
 
 	if (!target) {
 		throw new HttpError(404, "User not found.");
@@ -1963,6 +1537,9 @@ async function handleSignup(request: Request): Promise<Response> {
 	const payload = parseSignupPayload(await readRequestJson(request));
 	assertWithinRateLimit(request, `signup:${normalizeEmail(payload.email)}`, AUTH_SIGNUP_RATE_LIMIT);
 	const user = await createUser(payload);
+	void sendVerificationEmailToUser(user).catch((error) => {
+		console.error("[auth] Failed to send signup verification email:", error);
+	});
 	const session = await createSession(user._id, getSessionRequestMeta(request));
 
 	return jsonResponse(request, 201, buildAuthSuccessResponse(user), {
@@ -2000,6 +1577,46 @@ async function handleLogout(request: Request): Promise<Response> {
 	return emptyResponse(request, 204, {
 		"Set-Cookie": clearSessionCookie(request),
 	});
+}
+
+async function handleVerifyEmail(request: Request): Promise<Response> {
+	assertWithinRateLimit(request, "verify-email", AUTH_VERIFY_EMAIL_RATE_LIMIT);
+	const payload = parseVerifyEmailPayload(await readRequestJson(request));
+	await getDb();
+
+	const record = findEmailVerificationToken(payload.token);
+	if (!record || record.expiresAt.getTime() <= Date.now()) {
+		if (record) deleteEmailVerificationToken(record.token);
+		throw new HttpError(400, "This verification link is invalid or has expired.");
+	}
+
+	const user = findUserById(record.userId);
+	if (!user) {
+		deleteEmailVerificationToken(record.token);
+		throw new HttpError(404, "Account not found.");
+	}
+
+	updateUserFields(user._id, { emailVerified: true, updatedAt: new Date() });
+	deleteEmailVerificationTokensForUser(user._id);
+
+	const response: VerifyEmailResponse = { verified: true, email: user.email };
+	return jsonResponse(request, 200, response);
+}
+
+async function handleResendVerification(request: Request): Promise<Response> {
+	assertWithinRateLimit(request, "verify-email:resend", AUTH_VERIFY_EMAIL_RATE_LIMIT);
+	const session = await resolveSessionUser(request);
+	if (!session) {
+		throw new HttpError(401, "Unauthorized.");
+	}
+
+	if (sanitizeRoleFlag(session.user.emailVerified)) {
+		throw new HttpError(400, "Email is already verified.");
+	}
+
+	await sendVerificationEmailToUser(session.user);
+	const response: ResendVerificationResponse = { sent: true };
+	return jsonResponse(request, 200, response);
 }
 
 async function handleSession(request: Request): Promise<Response> {
@@ -2211,6 +1828,107 @@ async function handleLatestRelease(request: Request): Promise<Response> {
 	});
 }
 
+interface StatusCheckResult {
+	status: StatusLevel;
+	latencyMs: number;
+	detail: string;
+}
+
+async function checkDataStore(): Promise<StatusCheckResult> {
+	const startedAt = Date.now();
+	try {
+		const instance = await getDb();
+		instance.query("SELECT 1").get();
+		return {
+			status: "operational",
+			latencyMs: Date.now() - startedAt,
+			detail: "Primary data store reachable.",
+		};
+	} catch (error) {
+		const message = error instanceof Error ? error.message : "Unknown error.";
+		return {
+			status: "outage",
+			latencyMs: Date.now() - startedAt,
+			detail: `Data store unreachable: ${message}`,
+		};
+	}
+}
+
+async function checkReleaseArchive(): Promise<StatusCheckResult> {
+	const startedAt = Date.now();
+	try {
+		const instance = await getDb();
+		instance.query("SELECT id FROM release_versions LIMIT 1").get();
+		return {
+			status: "operational",
+			latencyMs: Date.now() - startedAt,
+			detail: "Release archive is queryable.",
+		};
+	} catch (error) {
+		const message = error instanceof Error ? error.message : "Unknown error.";
+		return {
+			status: "outage",
+			latencyMs: Date.now() - startedAt,
+			detail: `Release archive unreachable: ${message}`,
+		};
+	}
+}
+
+function deriveOverallStatus(components: StatusComponent[]): StatusLevel {
+	if (components.some((component) => component.status === "outage")) return "outage";
+	if (components.some((component) => component.status === "degraded")) return "degraded";
+	return "operational";
+}
+
+async function handleStatusSummary(request: Request): Promise<Response> {
+	const requestStartedAt = Date.now();
+	const [dataStoreCheck, releaseArchiveCheck] = await Promise.all([
+		checkDataStore(),
+		checkReleaseArchive(),
+	]);
+
+	const components: StatusComponent[] = [
+		{
+			key: "accounts-api",
+			label: "Accounts & sessions API",
+			status: "operational",
+			latencyMs: Date.now() - requestStartedAt,
+			detail: "Answering authentication and session requests.",
+		},
+		{
+			key: "data-store",
+			label: "SQLite data store",
+			status: dataStoreCheck.status,
+			latencyMs: dataStoreCheck.latencyMs,
+			detail: dataStoreCheck.detail,
+		},
+		{
+			key: "release-archive",
+			label: "Release & downloads archive",
+			status: releaseArchiveCheck.status,
+			latencyMs: releaseArchiveCheck.latencyMs,
+			detail: releaseArchiveCheck.detail,
+		},
+	];
+
+	const response: StatusSummaryResponse = {
+		status: deriveOverallStatus(components),
+		region: "ap-south-1 (Mumbai)",
+		checkedAt: new Date().toISOString(),
+		components,
+	};
+
+	return jsonResponse(request, 200, response);
+}
+
+async function routeStatusRequest(request: Request, url: URL): Promise<Response> {
+	if (request.method === "GET" && url.pathname === `${STATUS_BASE_PATH}/summary`) {
+		return handleStatusSummary(request);
+	}
+
+	return jsonResponse(request, 404, buildErrorResponse("Status resource not found."));
+}
+
 async function routeDownloadsRequest(request: Request, url: URL): Promise<Response> {
 	if (request.method === "GET" && url.pathname === `${DOWNLOADS_BASE_PATH}/releases`) {
 		return handleReleasesFeed(request);
@@ -2256,6 +1974,10 @@ async function routeRequest(request: Request): Promise<Response> {
 	const url = new URL(request.url);
 	if (url.pathname.startsWith(DOWNLOADS_BASE_PATH)) {
 		return routeDownloadsRequest(request, url);
+	}
+
+	if (url.pathname.startsWith(STATUS_BASE_PATH)) {
+		return routeStatusRequest(request, url);
 	}
 
 	if (!url.pathname.startsWith(AUTH_BASE_PATH)) {
@@ -2352,6 +2074,14 @@ async function routeRequest(request: Request): Promise<Response> {
 		return handleSignup(request);
 	}
 
+	if (request.method === "POST" && url.pathname === `${AUTH_BASE_PATH}/verify-email`) {
+		return handleVerifyEmail(request);
+	}
+
+	if (request.method === "POST" && url.pathname === `${AUTH_BASE_PATH}/verify-email/resend`) {
+		return handleResendVerification(request);
+	}
+
 	if (request.method === "POST" && url.pathname === AUTH_BASE_PATH) {
 		return handleLogin(request);
 	}
@@ -2405,6 +2135,8 @@ async function handleRequestWithErrorBoundary(request: Request): Promise<Respons
 }
 
 export async function startAuthServer() {
+	await getDb();
+
 	const app = new Elysia({ name: "litecheats-auth-api" }).all("/*", ({ request }) =>
 		handleRequestWithErrorBoundary(request),
 	);
@@ -2412,5 +2144,8 @@ export async function startAuthServer() {
 
 	console.log(`Auth server started at http://localhost:${AUTH_API_PORT}${AUTH_BASE_PATH}`);
 	console.log(`Downloads API available at http://localhost:${AUTH_API_PORT}${DOWNLOADS_BASE_PATH}`);
+	console.log(
+		`Status API available at http://localhost:${AUTH_API_PORT}${STATUS_BASE_PATH}/summary`,
+	);
 	return app;
 }

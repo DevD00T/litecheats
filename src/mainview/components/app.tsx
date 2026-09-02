@@ -2,16 +2,44 @@ import { AuthProvider, useAuth } from "@/components/auth/auth-provider";
 import { SiteFooter } from "@/components/layout/site-footer";
 import { SiteHeader } from "@/components/layout/site-header";
 import { Toaster } from "@/components/ui/sonner";
+import { hasAcceptedConsent } from "@/lib/consent";
 import { AboutPage } from "@/pages/about-page";
+import { AcceptTermsPage } from "@/pages/accept-terms-page";
 import { AccountPage } from "@/pages/account-page";
 import { AdminPage } from "@/pages/admin-page";
+import { CareersPage } from "@/pages/careers-page";
 import { ContactPage } from "@/pages/contact-page";
+import { ArchiveArtifactsPage } from "@/pages/docs/archive-artifacts-page";
+import { ArchiveJobsPage } from "@/pages/docs/archive-jobs-page";
+import { ArchiveLogsPage } from "@/pages/docs/archive-logs-page";
+import { AuthenticationPage } from "@/pages/docs/authentication-page";
+import { ControlCommandPage } from "@/pages/docs/control-command-page";
+import { ControlMissionPage } from "@/pages/docs/control-mission-page";
+import { ControlModePage } from "@/pages/docs/control-mode-page";
+import { DocsLayout } from "@/pages/docs/docs-layout";
+import { ErrorsPage } from "@/pages/docs/errors-page";
+import { QuickstartPage } from "@/pages/docs/quickstart-page";
+import { ScopesPage } from "@/pages/docs/scopes-page";
+import { SdkPythonPage } from "@/pages/docs/sdk-python-page";
+import { SdkRos2Page } from "@/pages/docs/sdk-ros2-page";
+import { SdkTypescriptPage } from "@/pages/docs/sdk-typescript-page";
+import { TelemetryMessagesPage } from "@/pages/docs/telemetry-messages-page";
+import { TelemetrySnapshotPage } from "@/pages/docs/telemetry-snapshot-page";
+import { TelemetryStreamPage } from "@/pages/docs/telemetry-stream-page";
 import { DownloadsPage } from "@/pages/downloads-page";
+import { DpdpCompliancePage } from "@/pages/dpdp-compliance-page";
 import { HomePage } from "@/pages/home-page";
 import { LoginPage } from "@/pages/login-page";
+import { MavlinkCloudPage } from "@/pages/platform/mavlink-cloud-page";
+import { RdosConsolePage } from "@/pages/platform/rdos-console-page";
+import { PressKitPage } from "@/pages/press-kit-page";
+import { PricingPage } from "@/pages/pricing-page";
 import { PrivacyPage } from "@/pages/privacy-page";
+import { SecurityPage } from "@/pages/security-page";
 import { SignupPage } from "@/pages/signup-page";
+import { StatusPage } from "@/pages/status-page";
 import { TermsPage } from "@/pages/terms-page";
+import { VerifyEmailPage } from "@/pages/verify-email-page";
 import { AnimatePresence } from "framer-motion";
 import { type ReactNode, useEffect, useState } from "react";
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
@@ -21,28 +49,71 @@ type ThemeMode = "light" | "dark";
 const THEME_STORAGE_KEY = "litecheats-theme-mode";
 
 function getInitialTheme(): ThemeMode {
-	if (typeof window === "undefined") return "light";
+	if (typeof window === "undefined") return "dark";
 
 	const storedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
 	if (storedTheme === "light" || storedTheme === "dark") {
 		return storedTheme;
 	}
 
-	return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+	// Litecheats is designed dark-first; light mode is opt-in via the toggle.
+	return "dark";
 }
+
+const CONSENT_EXEMPT_PATHS = new Set([
+	"/accept-terms",
+	"/terms",
+	"/privacy-policy",
+	"/dpdp-compliance",
+]);
 
 function AnimatedRoutes() {
 	const location = useLocation();
+
+	if (!hasAcceptedConsent() && !CONSENT_EXEMPT_PATHS.has(location.pathname)) {
+		const redirect = encodeURIComponent(`${location.pathname}${location.search}`);
+		return <Navigate to={`/accept-terms?redirect=${redirect}`} replace />;
+	}
 
 	return (
 		<AnimatePresence mode="wait" initial={false}>
 			<Routes location={location} key={location.pathname}>
 				<Route path="/" element={<HomePage />} />
+				<Route path="/pricing" element={<PricingPage />} />
+				<Route path="/platform/rdos-console" element={<RdosConsolePage />} />
+				<Route path="/platform/mavlink-cloud" element={<MavlinkCloudPage />} />
+				<Route path="/dpdp-compliance" element={<DpdpCompliancePage />} />
+				<Route path="/accept-terms" element={<AcceptTermsPage />} />
+				<Route path="/docs" element={<DocsLayout />}>
+					<Route index element={<Navigate to="quickstart" replace />} />
+					<Route path="quickstart" element={<QuickstartPage />} />
+					<Route path="authentication" element={<AuthenticationPage />} />
+					<Route path="scopes" element={<ScopesPage />} />
+					<Route path="errors" element={<ErrorsPage />} />
+					<Route path="telemetry/stream" element={<TelemetryStreamPage />} />
+					<Route path="telemetry/snapshot" element={<TelemetrySnapshotPage />} />
+					<Route path="telemetry/messages" element={<TelemetryMessagesPage />} />
+					<Route path="control/command" element={<ControlCommandPage />} />
+					<Route path="control/mode" element={<ControlModePage />} />
+					<Route path="control/mission" element={<ControlMissionPage />} />
+					<Route path="archive/logs" element={<ArchiveLogsPage />} />
+					<Route path="archive/artifacts" element={<ArchiveArtifactsPage />} />
+					<Route path="archive/jobs" element={<ArchiveJobsPage />} />
+					<Route path="sdks/python" element={<SdkPythonPage />} />
+					<Route path="sdks/typescript" element={<SdkTypescriptPage />} />
+					<Route path="sdks/ros2" element={<SdkRos2Page />} />
+					<Route path="*" element={<Navigate to="/docs/quickstart" replace />} />
+				</Route>
 				<Route path="/about" element={<AboutPage />} />
 				<Route path="/contact" element={<ContactPage />} />
 				<Route path="/downloads" element={<DownloadsPage />} />
+				<Route path="/status" element={<StatusPage />} />
+				<Route path="/security" element={<SecurityPage />} />
+				<Route path="/careers" element={<CareersPage />} />
+				<Route path="/press-kit" element={<PressKitPage />} />
 				<Route path="/privacy-policy" element={<PrivacyPage />} />
 				<Route path="/terms" element={<TermsPage />} />
+				<Route path="/verify-email" element={<VerifyEmailPage />} />
 				<Route
 					path="/login"
 					element={
@@ -147,9 +218,9 @@ function AppShell({
 	onToggleTheme,
 }: { themeMode: ThemeMode; onToggleTheme: () => void }) {
 	return (
-		<div className="relative min-h-screen overflow-hidden">
-			<div className="pointer-events-none fixed inset-0 -z-10 bg-[linear-gradient(125deg,rgba(56,141,236,0.15),rgba(255,200,93,0.1)_45%,rgba(38,173,139,0.12))] dark:bg-[linear-gradient(130deg,rgba(12,28,58,0.86),rgba(39,18,47,0.78)_45%,rgba(14,48,58,0.8))]" />
-			<div className="pointer-events-none fixed inset-0 -z-10 bg-[radial-gradient(circle_at_11%_14%,rgba(57,126,255,0.27),transparent_28%),radial-gradient(circle_at_90%_84%,rgba(255,147,84,0.23),transparent_27%)] dark:bg-[radial-gradient(circle_at_14%_18%,rgba(58,134,255,0.2),transparent_30%),radial-gradient(circle_at_86%_76%,rgba(255,122,90,0.18),transparent_28%)]" />
+		<div className="app-canvas relative min-h-screen overflow-hidden">
+			<div className="app-glow" aria-hidden />
+			<div className="app-grid" aria-hidden />
 			<SessionRouteSync />
 			<SiteHeader themeMode={themeMode} onToggleTheme={onToggleTheme} />
 			<AnimatedRoutes />

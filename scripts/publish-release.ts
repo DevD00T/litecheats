@@ -1,22 +1,20 @@
 #!/usr/bin/env bun
 
 import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { basename, extname, resolve } from "node:path";
-import { pipeline } from "node:stream/promises";
 import {
-	type Collection,
-	type Db,
-	type Document,
-	GridFSBucket,
-	MongoClient,
-	ObjectId,
-} from "mongodb";
-import { RELEASE_FILES_BUCKET, type ReleaseFormat, type ReleasePlatform } from "../shared/releases";
-
-const DEFAULT_MONGODB_URI = "mongodb://127.0.0.1:27017";
-const DEFAULT_MONGODB_DB_NAME = "litecheats";
+	deleteArtifactById,
+	findArtifactByLookup,
+	findReleaseByVersion,
+	getDb,
+	insertArtifact,
+	insertRelease,
+	setReleaseLatest,
+	unsetLatestExcept,
+	updateReleaseFields,
+} from "../src/bun/db";
+import type { ReleaseFormat, ReleasePlatform } from "../shared/releases";
 
 const SUPPORTED_PLATFORMS: ReleasePlatform[] = ["macos", "windows", "linux"];
 const SUPPORTED_FORMATS: ReleaseFormat[] = [
@@ -29,31 +27,6 @@ const SUPPORTED_FORMATS: ReleaseFormat[] = [
 	"tar.gz",
 	"tar.zst",
 ];
-
-interface ReleaseVersionDocument extends Document {
-	_id: string;
-	version: string;
-	notes: string;
-	publishedAt: Date;
-	isLatest: boolean;
-	createdAt: Date;
-	updatedAt: Date;
-}
-
-interface ReleaseArtifactDocument extends Document {
-	_id: string;
-	releaseId: string;
-	version: string;
-	platform: ReleasePlatform;
-	format: ReleaseFormat;
-	target: string;
-	filename: string;
-	sizeBytes: number;
-	sha256: string;
-	mimeType: string;
-	gridFsFileId: string;
-	createdAt: Date;
-}
 
 interface PublishOptions {
 	version: string;
@@ -181,49 +154,6 @@ async function computeSha256(filePath: string): Promise<string> {
 	return hash.digest("hex");
 }
 
-async function uploadArtifactToGridFs(
-	db: Db,
-	filePath: string,
-	filename: string,
-	metadata: Record<string, unknown>,
-): Promise<ObjectId> {
-	const bucket = new GridFSBucket(db, { bucketName: RELEASE_FILES_BUCKET });
-	const source = createReadStream(filePath);
-	const upload = bucket.openUploadStream(filename, {
-		metadata,
-	});
-
-	await pipeline(source, upload);
-	return upload.id as ObjectId;
-}
-
-async function removeExistingArtifact(
-	db: Db,
-	releaseArtifacts: Collection<ReleaseArtifactDocument>,
-	version: string,
-	platform: ReleasePlatform,
-	format: ReleaseFormat,
-	target: string,
-): Promise<void> {
-	const existing = await releaseArtifacts.findOne({
-		version,
-		platform,
-		format,
-		target,
-	});
-
-	if (!existing) return;
-
-	const bucket = new GridFSBucket(db, { bucketName: RELEASE_FILES_BUCKET });
-	try {
-		await bucket.delete(new ObjectId(existing.gridFsFileId));
-	} catch {
-		// Ignore stale GridFS reference cleanup failures.
-	}
-
-	await releaseArtifacts.deleteOne({ _id: existing._id });
-}
-
 function parseOptions(argv: string[]): PublishOptions {
 	if (argv.includes("--help") || argv.includes("-h")) {
 		printUsage();
@@ -264,67 +194,49 @@ async function publishRelease(options: PublishOptions): Promise<void> {
 	const filename = basename(options.artifactPath);
 	const now = new Date();
 	const mimeType = resolveMimeType(options.format);
+	const fileData = new Uint8Array(await Bun.file(options.artifactPath).arrayBuffer());
 
-	const mongoClient = new MongoClient(Bun.env.MONGODB_URI ?? DEFAULT_MONGODB_URI);
-	try {
-		await mongoClient.connect();
-		const db = mongoClient.db(Bun.env.MONGODB_DB_NAME ?? DEFAULT_MONGODB_DB_NAME);
-		const releaseVersions = db.collection<ReleaseVersionDocument>("release_versions");
-		const releaseArtifacts = db.collection<ReleaseArtifactDocument>("release_artifacts");
+	await getDb();
 
-		const existingRelease = await releaseVersions.findOne({ version: options.version });
-		const releaseId = existingRelease?._id ?? crypto.randomUUID();
+	const existingRelease = findReleaseByVersion(options.version);
+	const releaseId = existingRelease?._id ?? crypto.randomUUID();
 
-		if (options.latest) {
-			await releaseVersions.updateMany(
-				{ _id: { $ne: releaseId }, isLatest: true },
-				{ $set: { isLatest: false, updatedAt: now } },
-			);
-		}
+	if (options.latest) {
+		unsetLatestExcept(releaseId, now);
+	}
 
-		if (existingRelease) {
-			await releaseVersions.updateOne(
-				{ _id: existingRelease._id },
-				{
-					$set: {
-						notes: options.notes,
-						publishedAt: now,
-						isLatest: options.latest,
-						updatedAt: now,
-					},
-				},
-			);
-		} else {
-			await releaseVersions.insertOne({
-				_id: releaseId,
-				version: options.version,
-				notes: options.notes,
-				publishedAt: now,
-				isLatest: options.latest,
-				createdAt: now,
-				updatedAt: now,
-			});
-		}
-
-		await removeExistingArtifact(
-			db,
-			releaseArtifacts,
-			options.version,
-			options.platform,
-			options.format,
-			options.target,
-		);
-
-		const gridFsFileId = await uploadArtifactToGridFs(db, options.artifactPath, filename, {
-			version: options.version,
-			platform: options.platform,
-			format: options.format,
-			target: options.target,
-			sha256,
+	if (existingRelease) {
+		updateReleaseFields(existingRelease._id, {
+			notes: options.notes,
+			publishedAt: now,
+			isLatest: options.latest,
+			updatedAt: now,
 		});
+	} else {
+		insertRelease({
+			_id: releaseId,
+			version: options.version,
+			notes: options.notes,
+			publishedAt: now,
+			isLatest: options.latest,
+			createdAt: now,
+			updatedAt: now,
+		});
+	}
 
-		const artifactId = crypto.randomUUID();
-		await releaseArtifacts.insertOne({
+	const existingArtifact = findArtifactByLookup(
+		releaseId,
+		options.platform,
+		options.format,
+		options.target,
+	);
+	if (existingArtifact) {
+		deleteArtifactById(existingArtifact._id);
+	}
+
+	const artifactId = crypto.randomUUID();
+	insertArtifact(
+		{
 			_id: artifactId,
 			releaseId,
 			version: options.version,
@@ -335,20 +247,22 @@ async function publishRelease(options: PublishOptions): Promise<void> {
 			sizeBytes: artifactStats.size,
 			sha256,
 			mimeType,
-			gridFsFileId: gridFsFileId.toHexString(),
 			createdAt: now,
-		});
+		},
+		fileData,
+	);
 
-		console.log(`Published release ${options.version}`);
-		console.log(`Artifact: ${filename}`);
-		console.log(`Platform: ${options.platform}`);
-		console.log(`Format: ${options.format}`);
-		console.log(`Target: ${options.target}`);
-		console.log(`SHA256: ${sha256}`);
-		console.log(`Download API: /downloads/artifacts/${artifactId}/file`);
-	} finally {
-		await mongoClient.close();
+	if (options.latest) {
+		setReleaseLatest(releaseId, true, now);
 	}
+
+	console.log(`Published release ${options.version}`);
+	console.log(`Artifact: ${filename}`);
+	console.log(`Platform: ${options.platform}`);
+	console.log(`Format: ${options.format}`);
+	console.log(`Target: ${options.target}`);
+	console.log(`SHA256: ${sha256}`);
+	console.log(`Download API: /downloads/artifacts/${artifactId}/file`);
 }
 
 try {

@@ -27,6 +27,7 @@ export function AccountPage() {
 	const [isLoadingSessions, setIsLoadingSessions] = useState(false);
 	const [isLoggingOutAll, setIsLoggingOutAll] = useState(false);
 	const [revokingSessionId, setRevokingSessionId] = useState<string | null>(null);
+	const [isResendingVerification, setIsResendingVerification] = useState(false);
 
 	useEffect(() => {
 		setFullName(user?.fullName ?? "");
@@ -132,6 +133,19 @@ export function AccountPage() {
 		}
 	};
 
+	const handleResendVerification = async () => {
+		setIsResendingVerification(true);
+		try {
+			await authApi.resendVerification();
+			toast.success("Verification email sent. Check your inbox.");
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "Failed to send verification email.";
+			toast.error(message);
+		} finally {
+			setIsResendingVerification(false);
+		}
+	};
+
 	const handleRevokeSession = async (sessionId: string, current: boolean) => {
 		setRevokingSessionId(sessionId);
 		try {
@@ -155,6 +169,28 @@ export function AccountPage() {
 	return (
 		<AnimatedPage>
 			<section className="mx-auto grid w-full max-w-3xl gap-5">
+				{user && !user.emailVerified ? (
+					<Card className="border-warning/40 bg-warning/[0.06]">
+						<CardContent className="flex flex-wrap items-center justify-between gap-3 pt-6">
+							<div>
+								<p className="text-sm font-semibold text-warning">Verify your email</p>
+								<p className="mt-1 text-xs text-warning/85">
+									We sent a verification link to {user.email} when you signed up. Confirm it to
+									secure your account.
+								</p>
+							</div>
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								disabled={isResendingVerification}
+								onClick={() => void handleResendVerification()}
+							>
+								{isResendingVerification ? "Sending..." : "Resend verification email"}
+							</Button>
+						</CardContent>
+					</Card>
+				) : null}
 				<Card className="bg-background/90">
 					<CardHeader className="space-y-3">
 						<Badge variant="secondary" className="w-fit bg-primary/12 text-primary">
@@ -168,7 +204,18 @@ export function AccountPage() {
 					<CardContent className="space-y-5">
 						<div className="rounded-lg border border-border/65 bg-muted/25 p-4 text-sm">
 							<p className="text-muted-foreground">Signed in as</p>
-							<p className="font-medium text-foreground">{user?.email ?? "Unknown"}</p>
+							<div className="flex flex-wrap items-center gap-2">
+								<p className="font-medium text-foreground">{user?.email ?? "Unknown"}</p>
+								{user?.emailVerified ? (
+									<Badge variant="secondary" className="bg-success/12 text-success">
+										Verified
+									</Badge>
+								) : (
+									<Badge variant="secondary" className="bg-warning/12 text-warning">
+										Unverified
+									</Badge>
+								)}
+							</div>
 						</div>
 						<div className="grid gap-3 rounded-lg border border-border/65 bg-muted/25 p-4 text-sm">
 							<div className="space-y-2">

@@ -6,6 +6,7 @@ import { Elysia } from "elysia";
 import { staticPlugin } from "@elysiajs/static";
 import { AUTH_API_PORT, AUTH_BASE_PATH } from "../shared/auth";
 import { DOWNLOADS_BASE_PATH } from "../shared/releases";
+import { STATUS_BASE_PATH } from "../shared/status";
 import { startAuthServer } from "../src/bun/auth-server";
 import {
 	getTelegramWebhookHealthHandler,
@@ -16,10 +17,22 @@ import {
 import { handleContactInquiry } from "./lib/contact-inquiry";
 
 const distDir = fileURLToPath(new URL("../dist", import.meta.url));
+const indexHtmlPath = `${distDir}/index.html`;
 const port = Number(Bun.env.PORT ?? Bun.env.HTTP_PORT ?? 8080);
 const host = "0.0.0.0";
 const AUTH_SERVER_ORIGIN = `http://127.0.0.1:${AUTH_API_PORT}`;
 const CONTACT_API_PATH = "/contact/inquiry";
+
+// @elysiajs/static's `indexHTML` option only serves index.html for paths that
+// resolve to a real directory on disk — it is not a generic SPA fallback. Any
+// client-side route (e.g. /login, /downloads, /docs/quickstart) otherwise
+// 404s on a direct load or refresh. Asset files always have an extension on
+// their last path segment, so treat any extension-less GET/HEAD request that
+// isn't an API call as an SPA route and serve the app shell for it.
+function looksLikeAssetRequest(pathname: string): boolean {
+	const lastSegment = pathname.slice(pathname.lastIndexOf("/") + 1);
+	return lastSegment.includes(".");
+}
 
 async function isPortInUse(checkPort: number): Promise<boolean> {
 	return new Promise((resolve) => {
@@ -73,12 +86,33 @@ app.onRequest(({ request }) => {
 		return handleContactInquiry(request);
 	}
 
-	if (pathname === AUTH_BASE_PATH || pathname.startsWith(`${AUTH_BASE_PATH}/`)) {
+	// AUTH_BASE_PATH ("/login") and DOWNLOADS_BASE_PATH ("/downloads") are both
+	// API path prefixes AND client-side SPA page routes. Only the exact base
+	// path with a method the API actually implements there (POST /login) is an
+	// API call; every other request at the bare path is a full page load of
+	// the SPA route and must fall through to the static app shell below.
+	if (
+		pathname.startsWith(`${AUTH_BASE_PATH}/`) ||
+		(pathname === AUTH_BASE_PATH && request.method === "POST")
+	) {
 		return proxyAuthApi(request);
 	}
 
-	if (pathname === DOWNLOADS_BASE_PATH || pathname.startsWith(`${DOWNLOADS_BASE_PATH}/`)) {
+	if (pathname.startsWith(`${DOWNLOADS_BASE_PATH}/`)) {
 		return proxyAuthApi(request);
+	}
+
+	if (pathname.startsWith(`${STATUS_BASE_PATH}/`)) {
+		return proxyAuthApi(request);
+	}
+
+	if (
+		(request.method === "GET" || request.method === "HEAD") &&
+		!looksLikeAssetRequest(pathname)
+	) {
+		return new Response(Bun.file(indexHtmlPath), {
+			headers: { "Content-Type": "text/html; charset=utf-8" },
+		});
 	}
 
 	return undefined;

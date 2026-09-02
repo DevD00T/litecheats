@@ -14,10 +14,10 @@ export function AnimatedPage({ children, className }: AnimatedPageProps) {
 				"relative z-10 mx-auto flex w-full max-w-6xl flex-1 flex-col gap-10 px-6 py-10 md:px-10",
 				className,
 			)}
-			initial={{ opacity: 0, y: 22 }}
+			initial={{ opacity: 0, y: 14 }}
 			animate={{ opacity: 1, y: 0 }}
-			exit={{ opacity: 0, y: -18 }}
-			transition={{ duration: 0.45, ease: [0.24, 0.8, 0.24, 1] }}
+			exit={{ opacity: 0, y: -10 }}
+			transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
 		>
 			{children}
 		</motion.main>

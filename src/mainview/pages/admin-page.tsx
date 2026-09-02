@@ -1,3 +1,4 @@
+import { useAuth } from "@/components/auth/auth-provider";
 import { AnimatedPage } from "@/components/layout/animated-page";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -770,6 +771,8 @@ function ReleaseManagementSection() {
 }
 
 export function AdminPage() {
+	const { user: viewer } = useAuth();
+	const viewerIsOwner = Boolean(viewer?.isOwner);
 	const [users, setUsers] = useState<AuthUser[]>([]);
 	const [stats, setStats] = useState<AdminUserListStats>(EMPTY_STATS);
 	const [drafts, setDrafts] = useState<Record<string, UserDraft>>({});
@@ -825,13 +828,19 @@ export function AdminPage() {
 		void refreshAdminData({ withLoading: true });
 	}, [refreshAdminData]);
 
+	const unverifiedCount = useMemo(
+		() => users.filter((user) => !user.emailVerified).length,
+		[users],
+	);
+
 	const roleBreakdown = useMemo(
 		() => [
 			{ label: "Total Users", value: stats.totalUsers },
 			{ label: "Admins", value: stats.adminUsers },
 			{ label: "Owners", value: stats.ownerUsers },
+			{ label: "Unverified Emails", value: unverifiedCount },
 		],
-		[stats],
+		[stats, unverifiedCount],
 	);
 
 	const updateDraft = (userId: string, patch: Partial<UserDraft>) => {
@@ -963,7 +972,7 @@ export function AdminPage() {
 						</CardDescription>
 					</CardHeader>
 					<CardContent className="space-y-4">
-						<div className="grid gap-3 md:grid-cols-3">
+						<div className="grid gap-3 md:grid-cols-4">
 							{roleBreakdown.map((item) => (
 								<div
 									key={item.label}
@@ -1075,16 +1084,21 @@ export function AdminPage() {
 									/>
 									Grant Admin
 								</label>
-								<label className="inline-flex items-center gap-2 text-sm">
-									<input
-										type="checkbox"
-										checked={Boolean(createForm.isOwner)}
-										onChange={(event) =>
-											setCreateForm((previous) => ({ ...previous, isOwner: event.target.checked }))
-										}
-									/>
-									Grant Owner
-								</label>
+								{viewerIsOwner ? (
+									<label className="inline-flex items-center gap-2 text-sm">
+										<input
+											type="checkbox"
+											checked={Boolean(createForm.isOwner)}
+											onChange={(event) =>
+												setCreateForm((previous) => ({
+													...previous,
+													isOwner: event.target.checked,
+												}))
+											}
+										/>
+										Grant Owner
+									</label>
+								) : null}
 							</div>
 							<Button type="submit" disabled={creating}>
 								{creating ? "Creating..." : "Create User"}
@@ -1110,8 +1124,19 @@ export function AdminPage() {
 								const companyInputId = `user-${user.id}-company`;
 								const emailInputId = `user-${user.id}-email`;
 								const passwordInputId = `user-${user.id}-password`;
+								const isSelf = viewer?.id === user.id;
+								// A non-owner admin can't touch another owner's account at all — the
+								// API rejects every field on that user, not just the owner flag.
+								const isLockedOwner = user.isOwner && !viewerIsOwner && !isSelf;
 								return (
-									<div key={user.id} className="rounded-xl border border-border/65 bg-muted/20 p-4">
+									<div
+										key={user.id}
+										className={
+											isLockedOwner
+												? "rounded-xl border border-border/40 bg-muted/10 p-4 opacity-70"
+												: "rounded-xl border border-border/65 bg-muted/20 p-4"
+										}
+									>
 										<div className="mb-3 flex flex-wrap items-center justify-between gap-2">
 											<div>
 												<p className="text-sm font-semibold text-foreground">{user.email}</p>
@@ -1120,6 +1145,18 @@ export function AdminPage() {
 												</p>
 											</div>
 											<div className="flex flex-wrap gap-2">
+												{isSelf ? (
+													<Badge className="bg-secondary/15 text-secondary">You</Badge>
+												) : null}
+												{user.emailVerified ? (
+													<Badge variant="secondary" className="bg-success/12 text-success">
+														Verified
+													</Badge>
+												) : (
+													<Badge variant="secondary" className="bg-warning/12 text-warning">
+														Unverified
+													</Badge>
+												)}
 												{user.roles.map((role) => (
 													<Badge key={`${user.id}-${role}`} variant="secondary">
 														{role}
@@ -1127,108 +1164,133 @@ export function AdminPage() {
 												))}
 											</div>
 										</div>
-										<div className="grid gap-3 md:grid-cols-2">
-											<div className="grid gap-2">
-												<label
-													htmlFor={fullNameInputId}
-													className="text-xs font-medium text-muted-foreground"
-												>
-													Full Name
-												</label>
-												<Input
-													id={fullNameInputId}
-													value={draft.fullName}
-													onChange={(event) =>
-														updateDraft(user.id, { fullName: event.target.value })
-													}
-												/>
-											</div>
-											<div className="grid gap-2">
-												<label
-													htmlFor={companyInputId}
-													className="text-xs font-medium text-muted-foreground"
-												>
-													Company
-												</label>
-												<Input
-													id={companyInputId}
-													value={draft.company}
-													onChange={(event) =>
-														updateDraft(user.id, { company: event.target.value })
-													}
-												/>
-											</div>
-											<div className="grid gap-2">
-												<label
-													htmlFor={emailInputId}
-													className="text-xs font-medium text-muted-foreground"
-												>
-													Email
-												</label>
-												<Input
-													id={emailInputId}
-													type="email"
-													value={draft.email}
-													onChange={(event) => updateDraft(user.id, { email: event.target.value })}
-												/>
-											</div>
-											<div className="grid gap-2">
-												<label
-													htmlFor={passwordInputId}
-													className="text-xs font-medium text-muted-foreground"
-												>
-													New Password
-												</label>
-												<Input
-													id={passwordInputId}
-													type="password"
-													placeholder="Leave blank to keep current"
-													value={draft.password}
-													onChange={(event) =>
-														updateDraft(user.id, { password: event.target.value })
-													}
-												/>
-											</div>
-										</div>
-										<div className="mt-3 flex flex-wrap items-center gap-4">
-											<label className="inline-flex items-center gap-2 text-sm">
-												<input
-													type="checkbox"
-													checked={draft.isAdmin}
-													onChange={(event) =>
-														updateDraft(user.id, { isAdmin: event.target.checked })
-													}
-												/>
-												Admin
-											</label>
-											<label className="inline-flex items-center gap-2 text-sm">
-												<input
-													type="checkbox"
-													checked={draft.isOwner}
-													onChange={(event) =>
-														updateDraft(user.id, { isOwner: event.target.checked })
-													}
-												/>
-												Owner
-											</label>
-										</div>
-										<div className="mt-4 flex flex-wrap gap-3">
-											<Button
-												type="button"
-												disabled={savingId === user.id}
-												onClick={() => void handleSaveUser(user)}
-											>
-												{savingId === user.id ? "Saving..." : "Save Changes"}
-											</Button>
-											<Button
-												type="button"
-												variant="destructive"
-												disabled={deletingId === user.id}
-												onClick={() => void handleDeleteUser(user)}
-											>
-												{deletingId === user.id ? "Deleting..." : "Delete User"}
-											</Button>
-										</div>
+
+										{isLockedOwner ? (
+											<p className="text-xs text-muted-foreground">
+												Only owners can view or manage another owner's account details.
+											</p>
+										) : (
+											<>
+												<div className="grid gap-3 md:grid-cols-2">
+													<div className="grid gap-2">
+														<label
+															htmlFor={fullNameInputId}
+															className="text-xs font-medium text-muted-foreground"
+														>
+															Full Name
+														</label>
+														<Input
+															id={fullNameInputId}
+															value={draft.fullName}
+															onChange={(event) =>
+																updateDraft(user.id, { fullName: event.target.value })
+															}
+														/>
+													</div>
+													<div className="grid gap-2">
+														<label
+															htmlFor={companyInputId}
+															className="text-xs font-medium text-muted-foreground"
+														>
+															Company
+														</label>
+														<Input
+															id={companyInputId}
+															value={draft.company}
+															onChange={(event) =>
+																updateDraft(user.id, { company: event.target.value })
+															}
+														/>
+													</div>
+													<div className="grid gap-2">
+														<label
+															htmlFor={emailInputId}
+															className="text-xs font-medium text-muted-foreground"
+														>
+															Email
+														</label>
+														<Input
+															id={emailInputId}
+															type="email"
+															value={draft.email}
+															onChange={(event) =>
+																updateDraft(user.id, { email: event.target.value })
+															}
+														/>
+													</div>
+													<div className="grid gap-2">
+														<label
+															htmlFor={passwordInputId}
+															className="text-xs font-medium text-muted-foreground"
+														>
+															New Password
+														</label>
+														<Input
+															id={passwordInputId}
+															type="password"
+															placeholder="Leave blank to keep current"
+															value={draft.password}
+															onChange={(event) =>
+																updateDraft(user.id, { password: event.target.value })
+															}
+														/>
+													</div>
+												</div>
+												<div className="mt-3 flex flex-wrap items-center gap-4">
+													<label className="inline-flex items-center gap-2 text-sm">
+														<input
+															type="checkbox"
+															checked={draft.isAdmin}
+															onChange={(event) =>
+																updateDraft(user.id, { isAdmin: event.target.checked })
+															}
+														/>
+														Admin
+													</label>
+													{viewerIsOwner ? (
+														<label className="inline-flex items-center gap-2 text-sm">
+															<input
+																type="checkbox"
+																checked={draft.isOwner}
+																onChange={(event) =>
+																	updateDraft(user.id, { isOwner: event.target.checked })
+																}
+															/>
+															Owner
+														</label>
+													) : draft.isOwner ? (
+														<span
+															className="text-sm text-muted-foreground"
+															title="Only owners can change owner access."
+														>
+															Owner (only an owner can change this)
+														</span>
+													) : null}
+												</div>
+												<div className="mt-4 flex flex-wrap gap-3">
+													<Button
+														type="button"
+														disabled={savingId === user.id}
+														onClick={() => void handleSaveUser(user)}
+													>
+														{savingId === user.id ? "Saving..." : "Save Changes"}
+													</Button>
+													<Button
+														type="button"
+														variant="destructive"
+														disabled={deletingId === user.id || isSelf}
+														title={
+															isSelf
+																? "You cannot delete your own account from the admin panel."
+																: undefined
+														}
+														onClick={() => void handleDeleteUser(user)}
+													>
+														{deletingId === user.id ? "Deleting..." : "Delete User"}
+													</Button>
+												</div>
+											</>
+										)}
 									</div>
 								);
 							})

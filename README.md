@@ -82,7 +82,7 @@ cp .env.example .env
 
 Bun automatically loads `.env` files, so no extra dotenv setup is required.
 
-### Auth + MongoDB setup
+### Auth + SQLite setup
 
 The app includes Bun-managed auth with:
 
@@ -90,14 +90,27 @@ The app includes Bun-managed auth with:
 - Session cookies issued by Bun auth server (`Path=/login`, `Max-Age=86400`)
 - Password hashing and verification using `Bun.password`
 - UUIDv7 IDs for users and sessions using `Bun.randomUUIDv7()` (fallback to `crypto.randomUUID`)
-- MongoDB-backed user/session collections with validators, indexes, and session TTL
+- A `bun:sqlite` database (`src/bun/db.ts`) for users, sessions, releases, release
+  artifacts, and Telegram admins — no external database server to run
 
-Set these in `.env`:
+Set these in `.env` (all optional, shown with their defaults):
 
 ```ini
-MONGODB_URI=mongodb://127.0.0.1:27017
-MONGODB_DB_NAME=litecheats
+SQLITE_PATH=./data/litecheats.sqlite
+OWNER_EMAIL=owner@litecheats.com
+OWNER_PASSWORD=
+OWNER_FULL_NAME=Owner
+OWNER_COMPANY=Litecheats Technologies
 ```
+
+On first boot, if no owner account exists yet, one is created automatically. Set
+`OWNER_PASSWORD` to choose it yourself; leave it blank and a random password is
+generated and printed once to the server console (grab it from there — it is
+never shown again). If an account already exists with `OWNER_EMAIL`, it is
+promoted to owner/admin instead of creating a duplicate.
+
+The SQLite file lives at `SQLITE_PATH` (default `./data/litecheats.sqlite`,
+gitignored) — back it up like you would any other database file.
 
 The Bun auth server runs on `http://localhost:8787` and exposes:
 
@@ -140,8 +153,8 @@ Bot commands included:
 - `/status`
 
 `TELEGRAM_ADMIN_USERNAMES` is a comma-separated bootstrap list. Those usernames are
-seeded into MongoDB as Telegram owners, and Telegram admins can then add more
-Telegram admins with `/admins add @username`.
+seeded into the SQLite database as Telegram owners, and Telegram admins can then
+add more Telegram admins with `/admins add @username`.
 
 `/status` is admin-only and checks Telegram bot connectivity, Telegram webhook
 registration, the configured webhook path, and Litecheats HTTP/API reachability.
@@ -168,9 +181,10 @@ This uses `untun` to expose local webhook URL automatically.
 
 When `BOT_TOKEN` is present and `TELEGRAM_BOT_ENABLED=true`, the bot starts with Bun runtimes (`bun run start`, `bun run web:fullstack`, and desktop Bun main process).
 
-### Downloads API (MongoDB-backed)
+### Downloads API (SQLite-backed)
 
-The app exposes a release feed and artifact download API backed by MongoDB:
+The app exposes a release feed and artifact download API backed by SQLite,
+with artifact bytes stored directly as BLOBs in the `release_artifacts` table:
 
 - `GET /downloads/releases`
 - `GET /downloads/releases/latest`
@@ -303,7 +317,7 @@ bun run build:stable
 
 This generates the app bundle plus patch files for delta updates. Upload the build output to your `baseUrl` location only if you intentionally enable updater-based distribution.
 
-### macOS DMG release publishing (MongoDB-backed downloads)
+### macOS DMG release publishing (SQLite-backed downloads)
 
 The app includes a release publisher flow for macOS DMG artifacts:
 
@@ -325,8 +339,8 @@ bun run release:macos --version v0.1.1 --artifact ./build/dmg/Litecheats.dmg --s
 bun run publish:release --version v0.1.0 --artifact ./build/dmg/Litecheats.dmg --platform macos --format dmg --target universal --latest true
 ```
 
-This stores the binary in GridFS (`release_artifacts` bucket), updates `release_versions`,
-and makes the file available through:
+This stores the binary as a BLOB in the `release_artifacts` table, updates
+`release_versions`, and makes the file available through:
 
 - `GET /downloads/releases`
 - `GET /downloads/artifacts/:artifactId/file`

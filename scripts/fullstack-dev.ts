@@ -4,6 +4,7 @@ import { createConnection } from "node:net";
 import { Elysia } from "elysia";
 import { AUTH_API_PORT, AUTH_BASE_PATH } from "../shared/auth";
 import { DOWNLOADS_BASE_PATH } from "../shared/releases";
+import { STATUS_BASE_PATH } from "../shared/status";
 import { startAuthServer } from "../src/bun/auth-server";
 import {
 	getTelegramWebhookHealthHandler,
@@ -154,11 +155,23 @@ app.onRequest(({ request }) => {
 		return handleContactInquiry(request);
 	}
 
-	if (pathname === AUTH_BASE_PATH || pathname.startsWith(`${AUTH_BASE_PATH}/`)) {
+	// AUTH_BASE_PATH ("/login") and DOWNLOADS_BASE_PATH ("/downloads") are both
+	// API path prefixes AND client-side SPA page routes. Only the exact base
+	// path with a method the API actually implements there (POST /login) is an
+	// API call; every other request at the bare path is a full page load of
+	// the SPA route and must fall through to Vite below.
+	if (
+		pathname.startsWith(`${AUTH_BASE_PATH}/`) ||
+		(pathname === AUTH_BASE_PATH && request.method === "POST")
+	) {
 		return proxyAuthApi(request);
 	}
 
-	if (pathname === DOWNLOADS_BASE_PATH || pathname.startsWith(`${DOWNLOADS_BASE_PATH}/`)) {
+	if (pathname.startsWith(`${DOWNLOADS_BASE_PATH}/`)) {
+		return proxyAuthApi(request);
+	}
+
+	if (pathname.startsWith(`${STATUS_BASE_PATH}/`)) {
 		return proxyAuthApi(request);
 	}
 
