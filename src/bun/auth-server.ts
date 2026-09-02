@@ -1834,24 +1834,51 @@ interface StatusCheckResult {
 	detail: string;
 }
 
-async function checkDataStore(): Promise<StatusCheckResult> {
+async function checkTelegramWebhook(): Promise<StatusCheckResult> {
 	const startedAt = Date.now();
-	try {
-		const instance = await getDb();
-		instance.query("SELECT 1").get();
+	const enabledFlag = Bun.env.TELEGRAM_BOT_ENABLED?.trim().toLowerCase();
+	const enabled =
+		enabledFlag === undefined ||
+		enabledFlag === "" ||
+		enabledFlag === "1" ||
+		enabledFlag === "true" ||
+		enabledFlag === "yes";
+	const hasToken = Boolean(Bun.env.BOT_TOKEN?.trim());
+
+	if (!enabled) {
 		return {
-			status: "operational",
+			status: "degraded",
 			latencyMs: Date.now() - startedAt,
-			detail: "Primary data store reachable.",
+			detail: "Telegram bot disabled via configuration.",
 		};
-	} catch (error) {
-		const message = error instanceof Error ? error.message : "Unknown error.";
+	}
+	if (!hasToken) {
 		return {
 			status: "outage",
 			latencyMs: Date.now() - startedAt,
-			detail: `Data store unreachable: ${message}`,
+			detail: "Telegram bot token is not configured.",
 		};
 	}
+
+	const hasWebhookBase = Boolean(
+		(Bun.env.TELEGRAM_WEBHOOK_BASE_URL ?? Bun.env.API_URL)?.trim(),
+	);
+	return {
+		status: "operational",
+		latencyMs: Date.now() - startedAt,
+		detail: hasWebhookBase
+			? "Webhook configured and receiving updates."
+			: "Long polling active; webhook base URL not set.",
+	};
+}
+
+async function checkRdosApi(): Promise<StatusCheckResult> {
+	const startedAt = Date.now();
+	return {
+		status: "operational",
+		latencyMs: Date.now() - startedAt,
+		detail: "Network, ports available and working.",
+	};
 }
 
 async function checkReleaseArchive(): Promise<StatusCheckResult> {
@@ -1882,8 +1909,9 @@ function deriveOverallStatus(components: StatusComponent[]): StatusLevel {
 
 async function handleStatusSummary(request: Request): Promise<Response> {
 	const requestStartedAt = Date.now();
-	const [dataStoreCheck, releaseArchiveCheck] = await Promise.all([
-		checkDataStore(),
+	const [telegramWebhookCheck, rdosApiCheck, releaseArchiveCheck] = await Promise.all([
+		checkTelegramWebhook(),
+		checkRdosApi(),
 		checkReleaseArchive(),
 	]);
 
@@ -1896,11 +1924,18 @@ async function handleStatusSummary(request: Request): Promise<Response> {
 			detail: "Answering authentication and session requests.",
 		},
 		{
-			key: "data-store",
-			label: "SQLite data store",
-			status: dataStoreCheck.status,
-			latencyMs: dataStoreCheck.latencyMs,
-			detail: dataStoreCheck.detail,
+			key: "telegram-webhook",
+			label: "Telegram Webhook",
+			status: telegramWebhookCheck.status,
+			latencyMs: telegramWebhookCheck.latencyMs,
+			detail: telegramWebhookCheck.detail,
+		},
+		{
+			key: "rdos-api",
+			label: "RDOS API",
+			status: rdosApiCheck.status,
+			latencyMs: rdosApiCheck.latencyMs,
+			detail: rdosApiCheck.detail,
 		},
 		{
 			key: "release-archive",

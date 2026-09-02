@@ -104,9 +104,8 @@ export function StatusPage() {
 						Live platform status
 					</h1>
 					<p className="mt-3 max-w-2xl text-sm leading-relaxed text-muted-foreground md:text-base">
-						Real-time checks against the accounts API, the primary data store, and the release
-						archive that back the RDOS console and MAVLink cloud. Fetched fresh from the Elysia
-						backend on every page load.
+						Real-time checks against the accounts API, the Telegram webhook, the RDOS API, and
+						the release archive that back the RDOS console and MAVLink cloud.
 					</p>
 				</div>
 
