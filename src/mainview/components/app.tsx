@@ -1,4 +1,6 @@
 import { AuthProvider, useAuth } from "@/components/auth/auth-provider";
+import { BackToTop } from "@/components/layout/back-to-top";
+import { ScrollToTop } from "@/components/layout/scroll-to-top";
 import { SiteFooter } from "@/components/layout/site-footer";
 import { SiteHeader } from "@/components/layout/site-header";
 import { Toaster } from "@/components/ui/sonner";
@@ -218,13 +220,15 @@ function AppShell({
 	onToggleTheme,
 }: { themeMode: ThemeMode; onToggleTheme: () => void }) {
 	return (
-		<div className="app-canvas relative min-h-screen overflow-hidden">
+		<div className="app-canvas relative min-h-screen">
 			<div className="app-glow" aria-hidden />
 			<div className="app-grid" aria-hidden />
 			<SessionRouteSync />
+			<ScrollToTop />
 			<SiteHeader themeMode={themeMode} onToggleTheme={onToggleTheme} />
 			<AnimatedRoutes />
 			<SiteFooter />
+			<BackToTop />
 			<Toaster />
 		</div>
 	);

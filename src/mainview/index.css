@@ -107,10 +107,29 @@
 	#root {
 		min-height: 100%;
 	}
+	html {
+		-webkit-text-size-adjust: 100%;
+		text-size-adjust: 100%;
+	}
 	body {
 		@apply min-h-screen bg-background text-foreground antialiased;
 		font-family: "Inter", "Segoe UI", "Avenir Next", sans-serif;
 		transition: background-color 260ms ease, color 220ms ease;
+		/* Guards against any single element pushing the page wider than the
+		   viewport on small screens, which would otherwise let the whole
+		   page pan sideways instead of just scrolling vertically. */
+		overflow-x: hidden;
+		-webkit-tap-highlight-color: transparent;
+	}
+	/* iOS Safari zooms the viewport in when a form field's font-size is
+	   under 16px on focus. Keeping inputs at 16px on small screens avoids
+	   that involuntary zoom-and-scroll jump. */
+	@media (max-width: 640px) {
+		input,
+		textarea,
+		select {
+			font-size: 16px;
+		}
 	}
 	h1,
 	h2,

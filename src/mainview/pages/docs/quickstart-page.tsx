@@ -143,7 +143,7 @@ export function QuickstartPage() {
 				</CodeGrid>
 			</DocSection>
 
-			<DocSection title="Base URLs">
+			<DocSection title="Base URLs" className="hidden md:block">
 				<DocTable
 					head={["Environment", "URL", "Notes"]}
 					rows={[

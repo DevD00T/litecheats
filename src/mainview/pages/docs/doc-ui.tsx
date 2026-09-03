@@ -1,7 +1,79 @@
 import { cn } from "@/lib/utils";
-import type { ReactNode } from "react";
+import { type ReactNode, useRef, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { docNavFlat } from "./nav";
+
+function CopyGlyph({ copied }: { copied: boolean }) {
+	if (copied) {
+		return (
+			<svg
+				viewBox="0 0 24 24"
+				fill="none"
+				stroke="currentColor"
+				strokeWidth="2.4"
+				strokeLinecap="round"
+				strokeLinejoin="round"
+				className="h-3 w-3"
+				aria-hidden="true"
+			>
+				<path d="M20 6L9 17l-5-5" />
+			</svg>
+		);
+	}
+	return (
+		<svg
+			viewBox="0 0 24 24"
+			fill="none"
+			stroke="currentColor"
+			strokeWidth="2"
+			strokeLinecap="round"
+			strokeLinejoin="round"
+			className="h-3 w-3"
+			aria-hidden="true"
+		>
+			<rect x="9" y="9" width="12" height="12" rx="2" />
+			<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+		</svg>
+	);
+}
+
+/** Copies the visible text of a code block, one grid/flex line per clipboard line. */
+function CopyButton({
+	getLines,
+	pushRight,
+}: { getLines: () => HTMLElement | null; pushRight?: boolean }) {
+	const [copied, setCopied] = useState(false);
+
+	const handleCopy = async () => {
+		const node = getLines();
+		if (!node) return;
+		const text = Array.from(node.children)
+			.map((line) => line.textContent ?? "")
+			.join("\n");
+		try {
+			await navigator.clipboard.writeText(text);
+			setCopied(true);
+			window.setTimeout(() => setCopied(false), 1600);
+		} catch {
+			// Clipboard access can be blocked in some embedded/webview contexts - fail quietly.
+		}
+	};
+
+	return (
+		<button
+			type="button"
+			onClick={handleCopy}
+			aria-label={copied ? "Copied to clipboard" : "Copy to clipboard"}
+			className={cn(
+				"inline-flex flex-none items-center gap-1 rounded-md border border-border/70 px-1.5 py-1 text-[10px] font-medium text-muted-foreground transition-colors hover:border-border hover:text-foreground active:scale-95",
+				pushRight && "ml-auto",
+			)}
+		>
+			<CopyGlyph copied={copied} />
+			{copied ? "Copied" : "Copy"}
+		</button>
+	);
+}
 
 const methodToneClasses: Record<string, string> = {
 	GET: "border-success/40 bg-success/12 text-success",
@@ -70,9 +142,13 @@ export function DocHeader({
 	);
 }
 
-export function DocSection({ title, children }: { title: string; children: ReactNode }) {
+export function DocSection({
+	title,
+	children,
+	className,
+}: { title: string; children: ReactNode; className?: string }) {
 	return (
-		<section className="mt-8">
+		<section className={cn("mt-8", className)}>
 			<h2 className="font-heading text-[19px] font-bold tracking-tight">{title}</h2>
 			<div className="mt-3">{children}</div>
 		</section>
@@ -99,6 +175,7 @@ export function CodeWindow({
 	meta?: string;
 	children: ReactNode;
 }) {
+	const contentRef = useRef<HTMLDivElement | null>(null);
 	return (
 		<div className="overflow-hidden rounded-[14px] border border-border bg-background">
 			<div className="flex items-center gap-2 border-b border-border/70 px-3.5 py-2.5">
@@ -108,8 +185,12 @@ export function CodeWindow({
 				{meta ? (
 					<span className="font-code ml-auto text-[9.5px] text-muted-foreground/70">{meta}</span>
 				) : null}
+				<CopyButton getLines={() => contentRef.current} pushRight={!meta} />
 			</div>
-			<div className="font-code space-y-0.5 overflow-auto p-3.5 text-[11px] leading-[1.8] text-foreground/85">
+			<div
+				ref={contentRef}
+				className="font-code space-y-0.5 overflow-x-auto p-3.5 text-[11px] leading-[1.8] whitespace-pre text-foreground/85"
+			>
 				{children}
 			</div>
 		</div>
@@ -126,65 +207,85 @@ interface ParamRow {
 	d: string;
 }
 
+const paramsTableColumns = "minmax(110px,max-content) minmax(80px,max-content) minmax(160px,1fr)";
+
 export function ParamsTable({ rows }: { rows: ParamRow[] }) {
 	return (
 		<div className="overflow-hidden rounded-[14px] border border-border bg-background">
-			<div className="overflow-x-auto">
-				<div className="min-w-[560px]">
-					<div className="grid grid-cols-[150px_96px_1fr] items-center bg-muted/40 px-4 py-2 text-[10px] tracking-[0.12em] text-muted-foreground uppercase">
-						<span>Name</span>
-						<span>Type</span>
-						<span>Description</span>
-					</div>
-					{rows.map((param) => (
-						<div
-							key={param.n}
-							className="grid grid-cols-[150px_96px_1fr] items-start gap-2 border-t border-border/50 px-4 py-2.5"
-						>
-							<span className="font-code text-[11.5px] text-secondary">{param.n}</span>
-							<span className="font-code text-[11px] text-muted-foreground">{param.t}</span>
-							<span className="text-[12.5px] leading-relaxed text-foreground/85">{param.d}</span>
-						</div>
-					))}
+			<div className="overflow-x-auto overscroll-x-contain">
+				<div
+					className="grid w-max min-w-full items-center gap-3 bg-muted/40 px-4 py-2 text-[10px] tracking-[0.12em] text-muted-foreground uppercase"
+					style={{ gridTemplateColumns: paramsTableColumns }}
+				>
+					<span>Name</span>
+					<span>Type</span>
+					<span>Description</span>
 				</div>
+				{rows.map((param) => (
+					<div
+						key={param.n}
+						className="grid w-max min-w-full items-start gap-3 border-t border-border/50 px-4 py-2.5"
+						style={{ gridTemplateColumns: paramsTableColumns }}
+					>
+						<span className="font-code text-[11.5px] whitespace-nowrap text-secondary">
+							{param.n}
+						</span>
+						<span className="font-code text-[11px] whitespace-nowrap text-muted-foreground">
+							{param.t}
+						</span>
+						<span className="text-[12.5px] leading-relaxed text-foreground/85">{param.d}</span>
+					</div>
+				))}
 			</div>
 		</div>
 	);
 }
 
 export function DocTable({ head, rows }: { head: string[]; rows: ReactNode[][] }) {
-	const template = `repeat(${head.length}, minmax(0,1fr))`;
+	// The last column is treated as prose (Notes/Setup/Description) and wraps in
+	// place; every earlier column is treated as a short code/label value and sizes
+	// to its own content instead of being squeezed - squeezing is what let a long
+	// URL bleed visually into the next column on narrow screens. If the content
+	// still doesn't fit the viewport, the wrapper below lets the row scroll/slide
+	// horizontally instead of clipping or overlapping anything.
+	const lastIndex = head.length - 1;
+	const template = head
+		.map((_, index) => (index === lastIndex ? "minmax(140px,1fr)" : "minmax(90px,max-content)"))
+		.join(" ");
 	return (
 		<div className="overflow-hidden rounded-[14px] border border-border bg-background">
-			<div className="overflow-x-auto">
-				<div style={{ minWidth: `${head.length * 128}px` }}>
-					<div
-						className="grid items-center gap-2 bg-muted/40 px-4 py-2 text-[10px] tracking-[0.12em] text-muted-foreground uppercase"
-						style={{ gridTemplateColumns: template }}
-					>
-						{head.map((h) => (
-							<span key={h}>{h}</span>
-						))}
-					</div>
-					{rows.map((row, i) => (
-						<div
-							// biome-ignore lint/suspicious/noArrayIndexKey: rows are a static, never-reordered table
-							key={i}
-							className="grid items-start gap-2 border-t border-border/50 px-4 py-2.5"
-							style={{ gridTemplateColumns: template }}
-						>
-							{row.map((cell, j) => (
-								<span
-									// biome-ignore lint/suspicious/noArrayIndexKey: cells are a static, never-reordered row
-									key={j}
-									className="text-[12px] leading-relaxed text-foreground/85"
-								>
-									{cell}
-								</span>
-							))}
-						</div>
+			<div className="overflow-x-auto overscroll-x-contain">
+				<div
+					className="grid w-max min-w-full items-center gap-3 bg-muted/40 px-4 py-2 text-[10px] tracking-[0.12em] text-muted-foreground uppercase"
+					style={{ gridTemplateColumns: template }}
+				>
+					{head.map((h) => (
+						<span key={h} className="whitespace-nowrap">
+							{h}
+						</span>
 					))}
 				</div>
+				{rows.map((row, i) => (
+					<div
+						// biome-ignore lint/suspicious/noArrayIndexKey: rows are a static, never-reordered table
+						key={i}
+						className="grid w-max min-w-full items-start gap-3 border-t border-border/50 px-4 py-2.5"
+						style={{ gridTemplateColumns: template }}
+					>
+						{row.map((cell, j) => (
+							<span
+								// biome-ignore lint/suspicious/noArrayIndexKey: cells are a static, never-reordered row
+								key={j}
+								className={cn(
+									"text-[12px] leading-relaxed text-foreground/85",
+									j === lastIndex ? "" : "whitespace-nowrap",
+								)}
+							>
+								{cell}
+							</span>
+						))}
+					</div>
+				))}
 			</div>
 		</div>
 	);
