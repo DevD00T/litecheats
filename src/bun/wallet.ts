@@ -524,6 +524,8 @@ async function sendRenewalWarning(
 		shortfall,
 		paymentMode: wallet.paymentMode,
 		autoRenew: wallet.autoRenew,
+		// Link back to the domain this account actually uses.
+		appOrigin: user.preferredOrigin ?? null,
 	});
 
 	if (shortfall > 0 || wallet.paymentMode !== "wallet" || !wallet.autoRenew) {

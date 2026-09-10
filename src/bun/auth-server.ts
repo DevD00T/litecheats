@@ -132,7 +132,11 @@ import {
 	upsertEmailVerificationCode,
 } from "./db";
 import { sendVerificationCodeEmail } from "./email";
-import { isRazorpayConfigured, isRazorpayWebhookConfigured } from "./razorpay";
+import {
+	countRazorpayWebhookSecrets,
+	isRazorpayConfigured,
+	isRazorpayWebhookConfigured,
+} from "./razorpay";
 import {
 	createWalletTopup,
 	getRenewalNoticeForUser,
@@ -179,6 +183,52 @@ const EMAIL_VERIFICATION_CODE_TTL_MS = Number(Bun.env.AUTH_VERIFY_CODE_TTL_MS ??
 const EMAIL_VERIFICATION_MAX_ATTEMPTS = 5;
 /** Minimum gap between code emails, so resend cannot be used to spam an inbox. */
 const EMAIL_VERIFICATION_RESEND_COOLDOWN_MS = 60 * 1000;
+/**
+ * Origins this app is legitimately served from, e.g. the .com and .in domains.
+ * A request's own Host/Origin header is attacker-controlled, so it is only ever
+ * used after matching against this list — otherwise a forged header could put a
+ * link to someone else's site into an email we send.
+ */
+const APP_ORIGINS: string[] = (() => {
+	const configured = [
+		...(Bun.env.PUBLIC_APP_ORIGINS ?? "").split(","),
+		Bun.env.PUBLIC_APP_URL ?? "",
+	]
+		.map((value) => value.trim().replace(/\/+$/, ""))
+		.filter(Boolean);
+
+	return [...new Set(configured.length ? configured : ["http://localhost:8080"])];
+})();
+
+/** Where to point links when the request gives us nothing usable. */
+const DEFAULT_APP_ORIGIN = APP_ORIGINS[0] ?? "http://localhost:8080";
+
+/**
+ * The app origin a request came from, or null when it is not one of ours.
+ * Prefers the Origin header, then the forwarded host, so it works behind a
+ * reverse proxy terminating TLS for several domains.
+ */
+function resolveRequestAppOrigin(request: Request): string | null {
+	const candidates: string[] = [];
+
+	const origin = request.headers.get("origin");
+	if (origin) candidates.push(origin);
+
+	const forwardedHost = request.headers.get("x-forwarded-host") ?? request.headers.get("host");
+	if (forwardedHost) {
+		const host = forwardedHost.split(",")[0]?.trim();
+		if (host) candidates.push(`${inferForwardedProtocol(request)}://${host}`);
+	}
+
+	for (const candidate of candidates) {
+		const normalized = candidate.trim().replace(/\/+$/, "").toLowerCase();
+		const match = APP_ORIGINS.find((allowed) => allowed.toLowerCase() === normalized);
+		if (match) return match;
+	}
+
+	return null;
+}
+
 const PUBLIC_APP_URL = (Bun.env.PUBLIC_APP_URL?.trim() || "http://localhost:8080").replace(
 	/\/+$/,
 	"",
@@ -1623,6 +1673,14 @@ async function handleSignup(request: Request): Promise<Response> {
 	assertWithinRateLimit(request, `signup:${normalizeEmail(payload.email)}`, AUTH_SIGNUP_RATE_LIMIT);
 	const user = await createUser(payload);
 
+	// Remember which of our domains this account signed up on, so mail sent
+	// later by a background job links back to the same place.
+	const signupOrigin = resolveRequestAppOrigin(request);
+	if (signupOrigin) {
+		updateUserFields(user._id, { preferredOrigin: signupOrigin, updatedAt: new Date() });
+		user.preferredOrigin = signupOrigin;
+	}
+
 	// The code is stored before responding, so it is already valid when the
 	// browser lands on the verification step. Only delivery is left to run in
 	// the background, since a slow mail provider should not stall signup.
@@ -1636,6 +1694,14 @@ async function handleSignup(request: Request): Promise<Response> {
 	return jsonResponse(request, 201, buildAuthSuccessResponse(user), {
 		"Set-Cookie": createSessionCookie(session._id, request),
 	});
+}
+
+/** Keeps a user's remembered domain in step with where they actually sign in. */
+function rememberAppOrigin(request: Request, user: WithId<UserDocument>): void {
+	const origin = resolveRequestAppOrigin(request);
+	if (!origin || user.preferredOrigin === origin) return;
+	updateUserFields(user._id, { preferredOrigin: origin, updatedAt: new Date() });
+	user.preferredOrigin = origin;
 }
 
 async function handleLogin(request: Request): Promise<Response> {
@@ -1652,7 +1718,11 @@ async function handleLogin(request: Request): Promise<Response> {
 		throw new HttpError(401, "Invalid email or password.");
 	}
 
+	// Only after the session is actually granted — a login refused by the
+	// device-session cap should not move where this account's mail points.
 	const session = await createSession(user._id, getSessionRequestMeta(request));
+	rememberAppOrigin(request, user);
+
 	return jsonResponse(request, 200, buildAuthSuccessResponse(user), {
 		"Set-Cookie": createSessionCookie(session._id, request),
 	});
@@ -2597,6 +2667,11 @@ export async function startAuthServer() {
 	if (!isRazorpayConfigured()) {
 		console.warn(
 			"[billing] RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET are not set — checkout is disabled.",
+		);
+	} else if (isRazorpayWebhookConfigured()) {
+		const count = countRazorpayWebhookSecrets();
+		console.log(
+			`[billing] Razorpay webhook ready at ${RAZORPAY_WEBHOOK_PATH} (${count} signing secret${count === 1 ? "" : "s"} accepted).`,
 		);
 	} else if (!isRazorpayWebhookConfigured()) {
 		console.warn(

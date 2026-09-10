@@ -31,6 +31,8 @@ export interface UserDocument {
 	isAdmin?: unknown;
 	isOwner?: unknown;
 	emailVerified?: unknown;
+	/** Validated app origin this account last signed in from, or null. */
+	preferredOrigin?: string | null;
 	passwordHash: string;
 	createdAt: Date;
 	updatedAt: Date;
@@ -147,6 +149,7 @@ interface UserRow {
 	isAdmin: number;
 	isOwner: number;
 	emailVerified: number;
+	preferredOrigin: string | null;
 	roles: string;
 	passwordHash: string;
 	createdAt: string;
@@ -509,6 +512,11 @@ function runMigrations(instance: Database): void {
 	if (!userColumns.some((column) => column.name === "emailVerified")) {
 		instance.exec("ALTER TABLE users ADD COLUMN emailVerified INTEGER NOT NULL DEFAULT 0;");
 	}
+	// Which of the app's domains this account actually uses, so mail sent later
+	// by a background job links back to the right one.
+	if (!userColumns.some((column) => column.name === "preferredOrigin")) {
+		instance.exec("ALTER TABLE users ADD COLUMN preferredOrigin TEXT;");
+	}
 }
 
 async function seedOwnerAccount(instance: Database): Promise<void> {
@@ -597,6 +605,7 @@ function rowToUser(row: UserRow): WithId<UserDocument> {
 		isAdmin: Boolean(row.isAdmin),
 		isOwner: Boolean(row.isOwner),
 		emailVerified: Boolean(row.emailVerified),
+		preferredOrigin: row.preferredOrigin,
 		roles: JSON.parse(row.roles) as UserRole[],
 		passwordHash: row.passwordHash,
 		createdAt: new Date(row.createdAt),
@@ -652,6 +661,9 @@ export function updateUserFields(id: string, patch: Partial<UserDocument>): void
 	if (patch.isAdmin !== undefined) columns.isAdmin = patch.isAdmin ? 1 : 0;
 	if (patch.isOwner !== undefined) columns.isOwner = patch.isOwner ? 1 : 0;
 	if (patch.emailVerified !== undefined) columns.emailVerified = patch.emailVerified ? 1 : 0;
+	if (patch.preferredOrigin !== undefined) {
+		columns.preferredOrigin = patch.preferredOrigin ?? "";
+	}
 	if (patch.passwordHash !== undefined) columns.passwordHash = patch.passwordHash;
 	if (patch.roles !== undefined) columns.roles = JSON.stringify(patch.roles);
 	if (patch.updatedAt !== undefined) columns.updatedAt = patch.updatedAt.toISOString();

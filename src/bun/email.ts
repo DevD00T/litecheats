@@ -107,6 +107,11 @@ interface RenewalWarningParams {
 	shortfall: number;
 	paymentMode: "wallet" | "checkout";
 	autoRenew: boolean;
+	/**
+	 * Which of the app's domains this account uses. Links point back there, so a
+	 * customer who signed up on one domain is never sent to another.
+	 */
+	appOrigin?: string | null;
 }
 
 function formatMoney(paise: number): string {
@@ -128,7 +133,8 @@ function renewalAction(params: RenewalWarningParams): string {
 }
 
 export async function sendRenewalWarningEmail(params: RenewalWarningParams): Promise<void> {
-	const billingUrl = `${PUBLIC_APP_URL}/billing`;
+	const appOrigin = (params.appOrigin || PUBLIC_APP_URL).replace(/\/+$/, "");
+	const billingUrl = `${appOrigin}/billing`;
 	const renewsOn = params.renewsAt.toLocaleDateString("en-IN", {
 		year: "numeric",
 		month: "long",

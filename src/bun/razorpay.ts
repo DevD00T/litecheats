@@ -7,7 +7,12 @@ const DEFAULT_TAX_PERCENT = 18;
 export interface RazorpayConfig {
 	keyId: string;
 	keySecret: string;
-	webhookSecret: string | null;
+	/**
+	 * Every accepted webhook signing secret. Razorpay issues one secret per
+	 * webhook, so a deployment serving several domains — or one mid-rotation —
+	 * legitimately has more than one valid secret at the same time.
+	 */
+	webhookSecrets: string[];
 	taxPercent: number;
 }
 
@@ -33,6 +38,23 @@ function readTaxPercent(): number {
 	return parsed;
 }
 
+/**
+ * Collects every configured webhook secret. `RAZORPAY_WEBHOOK_SECRET` stays the
+ * single-webhook case; `RAZORPAY_WEBHOOK_SECRETS` takes a comma-separated list
+ * for deployments with a webhook per domain.
+ */
+function readWebhookSecrets(): string[] {
+	const secrets = [
+		readEnv("RAZORPAY_WEBHOOK_SECRET"),
+		...(Bun.env.RAZORPAY_WEBHOOK_SECRETS ?? "").split(","),
+	]
+		.map((secret) => secret?.trim())
+		.filter((secret): secret is string => Boolean(secret));
+
+	// A secret listed in both variables must not be tried twice.
+	return [...new Set(secrets)];
+}
+
 /** Returns null when the keys are absent, so the app boots fine without Razorpay. */
 export function getRazorpayConfig(): RazorpayConfig | null {
 	const keyId = readEnv("RAZORPAY_KEY_ID");
@@ -42,7 +64,7 @@ export function getRazorpayConfig(): RazorpayConfig | null {
 	return {
 		keyId,
 		keySecret,
-		webhookSecret: readEnv("RAZORPAY_WEBHOOK_SECRET"),
+		webhookSecrets: readWebhookSecrets(),
 		taxPercent: readTaxPercent(),
 	};
 }
@@ -120,14 +142,25 @@ export function verifyCheckoutSignature(params: {
  * parsed JSON changes key order and whitespace and breaks the signature.
  */
 export function verifyWebhookSignature(rawBody: string, signature: string): boolean {
-	const config = getRazorpayConfig();
-	if (!config?.webhookSecret) return false;
+	const secrets = getRazorpayConfig()?.webhookSecrets ?? [];
+	if (!secrets.length) return false;
 
-	return safeEquals(hmacSha256Hex(rawBody, config.webhookSecret), signature);
+	// Every secret is checked even after a match, so the work done does not
+	// depend on which webhook the delivery came from.
+	let matched = false;
+	for (const secret of secrets) {
+		if (safeEquals(hmacSha256Hex(rawBody, secret), signature)) matched = true;
+	}
+	return matched;
 }
 
 export function isRazorpayWebhookConfigured(): boolean {
-	return Boolean(getRazorpayConfig()?.webhookSecret);
+	return (getRazorpayConfig()?.webhookSecrets.length ?? 0) > 0;
+}
+
+/** How many webhook secrets are accepted, for the startup banner. */
+export function countRazorpayWebhookSecrets(): number {
+	return getRazorpayConfig()?.webhookSecrets.length ?? 0;
 }
 
 /** True when Razorpay rejected our API key pair, rather than the request. */
