@@ -9,6 +9,7 @@ import { AboutPage } from "@/pages/about-page";
 import { AcceptTermsPage } from "@/pages/accept-terms-page";
 import { AccountPage } from "@/pages/account-page";
 import { AdminPage } from "@/pages/admin-page";
+import { BillingPage } from "@/pages/billing-page";
 import { CareersPage } from "@/pages/careers-page";
 import { ContactPage } from "@/pages/contact-page";
 import { ArchiveArtifactsPage } from "@/pages/docs/archive-artifacts-page";
@@ -137,6 +138,14 @@ function AnimatedRoutes() {
 					element={
 						<ProtectedRoute>
 							<AccountPage />
+						</ProtectedRoute>
+					}
+				/>
+				<Route
+					path="/billing"
+					element={
+						<ProtectedRoute>
+							<BillingPage />
 						</ProtectedRoute>
 					}
 				/>

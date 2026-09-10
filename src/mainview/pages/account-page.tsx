@@ -1,4 +1,5 @@
 import { useAuth } from "@/components/auth/auth-provider";
+import { SubscriptionCard } from "@/components/billing/subscription-card";
 import { AnimatedPage } from "@/components/layout/animated-page";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -191,6 +192,7 @@ export function AccountPage() {
 						</CardContent>
 					</Card>
 				) : null}
+				<SubscriptionCard />
 				<Card className="bg-background/90">
 					<CardHeader className="space-y-3">
 						<Badge variant="secondary" className="w-fit bg-primary/12 text-primary">

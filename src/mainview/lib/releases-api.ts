@@ -13,11 +13,10 @@ function resolveReleasesApiOrigin(): string {
 	if (typeof window !== "undefined") {
 		const protocol = window.location.protocol;
 		if (protocol === "http:" || protocol === "https:") {
-			// Vite standalone dev serves HTML fallback for unknown routes.
-			// Route release API directly to Bun backend in this mode.
-			if (window.location.hostname === "localhost" && window.location.port === "5173") {
-				return `http://localhost:${AUTH_API_PORT}`;
-			}
+			// Always same-origin, matching auth-api and billing-api. In dev the
+			// Vite proxy forwards "/downloads/..." to the API; pointing straight at
+			// the API port instead would make this a cross-origin request for no
+			// benefit, and artifact downloads would inherit the same problem.
 			return window.location.origin;
 		}
 	}

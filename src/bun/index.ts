@@ -247,7 +247,15 @@ if (await isPortInUse(AUTH_API_PORT)) {
 		}
 	}
 }
-await startTelegramBot();
+// Telegram long polling allows exactly one consumer per bot token: a second
+// one makes the API answer 409 Conflict and neither instance receives updates
+// reliably. Only the process that actually owns the auth server starts the bot,
+// so running the desktop app and a dev gateway side by side is harmless.
+if (authServer) {
+	await startTelegramBot();
+} else {
+	console.log("Telegram bot not started: another instance already owns the auth server.");
+}
 
 const mainViewUrl = await getMainViewUrl();
 console.log(`Main webview URL: ${mainViewUrl}`);

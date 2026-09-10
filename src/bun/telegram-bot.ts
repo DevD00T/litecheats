@@ -4,6 +4,8 @@ import {
 	type WithId,
 	findTelegramAdminByUsernameLower,
 	getDb,
+	linkTelegramAdminChat,
+	listTelegramAdminChatIds,
 	listTelegramAdminsSorted,
 	seedTelegramAdminsFromEnv,
 	upsertTelegramAdmin,
@@ -52,6 +54,7 @@ interface TelegramUserLike {
 interface TelegramCommandContext {
 	args: string | null;
 	from?: TelegramUserLike;
+	chat?: { id?: number; type?: string };
 	send(message: unknown): unknown;
 }
 
@@ -165,6 +168,64 @@ async function hasTelegramAdminAccess(from: TelegramUserLike | undefined): Promi
 	return Boolean(await findTelegramAdminByUsername(from?.username));
 }
 
+/**
+ * Remembers where to DM an admin. Telegram never exposes a user's chat id from
+ * their @username alone, so it is captured the first time they message the bot
+ * privately — that is also the moment Telegram starts allowing the bot to DM
+ * them at all.
+ */
+async function rememberAdminChat(ctx: TelegramCommandContext): Promise<void> {
+	const chatId = ctx.chat?.id;
+	// Group chats would give us a group id, which is not a personal chat.
+	if (!chatId || (ctx.chat?.type && ctx.chat.type !== "private")) return;
+
+	const username = ctx.from?.username ? normalizeTelegramUsername(ctx.from.username) : null;
+	if (!username) return;
+
+	await getDb();
+	linkTelegramAdminChat(getTelegramUsernameLower(username), chatId);
+}
+
+/**
+ * Sends a message to every admin the bot can reach. Admins who have never
+ * opened a chat with the bot have no chat id and are skipped — they are listed
+ * as "not linked" by /admins so someone can nudge them.
+ */
+export async function notifyTelegramAdmins(text: string): Promise<number> {
+	if (!TELEGRAM_BOT_ENABLED) return 0;
+
+	const currentBot = bot ?? getOrCreateBot();
+	if (!currentBot) return 0;
+
+	await seedTelegramAdmins();
+	await getDb();
+	const recipients = listTelegramAdminChatIds();
+	if (!recipients.length) {
+		console.warn(
+			"[telegram] No admin has opened a chat with the bot yet, so no order notification was sent.",
+		);
+		return 0;
+	}
+
+	let delivered = 0;
+	for (const recipient of recipients) {
+		try {
+			await currentBot.api.sendMessage({
+				chat_id: recipient.chatId,
+				text,
+				parse_mode: "HTML",
+			});
+			delivered += 1;
+		} catch (error) {
+			// One unreachable admin (blocked the bot, deleted account) must not
+			// stop the others from being told.
+			console.error(`[telegram] Could not notify @${recipient.username}:`, error);
+		}
+	}
+
+	return delivered;
+}
+
 async function listTelegramAdmins(): Promise<WithId<TelegramAdminDocument>[]> {
 	await seedTelegramAdmins();
 	await getDb();
@@ -186,6 +247,7 @@ async function addTelegramAdmin(
 
 async function handleAdminsCommand(ctx: TelegramCommandContext): Promise<unknown> {
 	const hasAccess = await hasTelegramAdminAccess(ctx.from);
+	if (hasAccess) await rememberAdminChat(ctx);
 	if (!hasAccess) {
 		return ctx.send(
 			"Telegram admin access required. Ask an existing Telegram admin to add your @username.",
@@ -220,7 +282,15 @@ async function handleAdminsCommand(ctx: TelegramCommandContext): Promise<unknown
 	}
 
 	return ctx.send(
-		["Telegram admins:", ...admins.map((admin) => `@${admin.username} - ${admin.role}`)].join("\n"),
+		[
+			"Telegram admins:",
+			...admins.map(
+				(admin) =>
+					`@${admin.username} - ${admin.role}${admin.chatId ? "" : " (not linked - open a chat with me and send /start)"}`,
+			),
+			"",
+			"Order alerts go to every linked admin.",
+		].join("\n"),
 	);
 }
 
@@ -371,13 +441,16 @@ function getOrCreateBot(): Bot | null {
 	if (!token) return null;
 
 	const nextBot = new Bot(token)
-		.command("start", (ctx) =>
-			ctx.send(
+		.command("start", async (ctx) => {
+			if (await hasTelegramAdminAccess(ctx.from)) {
+				await rememberAdminChat(ctx);
+			}
+			return ctx.send(
 				format`${bold`Hello, ${ctx.from?.firstName ?? "stranger"}!`}
 
 Welcome to ${link("Litecheats Technologies", "https://litecheats.com")}.`,
-			),
-		)
+			);
+		})
 		.command("help", (ctx) =>
 			ctx.send(
 				[
@@ -387,6 +460,8 @@ Welcome to ${link("Litecheats Technologies", "https://litecheats.com")}.`,
 					"/admins - List Telegram admins",
 					"/admins add @username - Add a Telegram admin",
 					"/status - Show Telegram, webhook, and Litecheats API status",
+					"",
+					"Admins receive order alerts here once they have sent /start.",
 				].join("\n"),
 			),
 		)

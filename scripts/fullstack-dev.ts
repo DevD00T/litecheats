@@ -4,6 +4,7 @@ import { createConnection } from "node:net";
 import { Elysia } from "elysia";
 import { AUTH_API_PORT, AUTH_BASE_PATH } from "../shared/auth";
 import { DOWNLOADS_BASE_PATH } from "../shared/releases";
+import { RAZORPAY_WEBHOOK_BASE_PATH } from "../shared/billing";
 import { STATUS_BASE_PATH } from "../shared/status";
 import { startAuthServer } from "../src/bun/auth-server";
 import {
@@ -92,13 +93,15 @@ async function waitForViteServer(timeoutMs: number): Promise<boolean> {
 	return false;
 }
 
-async function ensureAuthServerRunning(): Promise<void> {
+/** Returns true when this process started the auth server itself. */
+async function ensureAuthServerRunning(): Promise<boolean> {
 	if (await isPortInUse(AUTH_API_PORT)) {
 		console.log(`Auth API is already running on :${AUTH_API_PORT}`);
-		return;
+		return false;
 	}
 
 	await startAuthServer();
+	return true;
 }
 
 async function proxyAuthApi(request: Request): Promise<Response> {
@@ -132,8 +135,17 @@ if (await isPortInUse(VITE_SERVER_PORT, "localhost")) {
 	}
 }
 
-await ensureAuthServerRunning();
-await startTelegramBot({ localPort: FULLSTACK_PORT });
+const ownsAuthServer = await ensureAuthServerRunning();
+
+// Telegram long polling allows exactly one consumer per bot token: a second
+// one makes the API answer 409 Conflict and neither instance receives updates
+// reliably. Only the process that actually owns the auth server starts the bot,
+// so running the desktop app and a dev gateway side by side is harmless.
+if (ownsAuthServer) {
+	await startTelegramBot({ localPort: FULLSTACK_PORT });
+} else {
+	console.log("Telegram bot not started: another instance already owns the auth server.");
+}
 const telegramWebhookPath = getTelegramWebhookPath();
 const telegramWebhookHealthHandler = getTelegramWebhookHealthHandler();
 const telegramWebhookHandler = getTelegramWebhookRouteHandler();
@@ -172,6 +184,11 @@ app.onRequest(({ request }) => {
 	}
 
 	if (pathname.startsWith(`${STATUS_BASE_PATH}/`)) {
+		return proxyAuthApi(request);
+	}
+
+	// Razorpay delivers webhooks here; the API server verifies the HMAC.
+	if (pathname.startsWith(`${RAZORPAY_WEBHOOK_BASE_PATH}/`)) {
 		return proxyAuthApi(request);
 	}
 

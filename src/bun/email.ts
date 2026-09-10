@@ -3,6 +3,10 @@ import { Resend } from "resend";
 const RESEND_API_KEY = Bun.env.RESEND_API_KEY?.trim();
 const RESEND_FROM_EMAIL =
 	Bun.env.RESEND_FROM_EMAIL?.trim() || "Litecheats Technologies <onboarding@resend.dev>";
+const PUBLIC_APP_URL = (Bun.env.PUBLIC_APP_URL?.trim() || "http://localhost:8080").replace(
+	/\/+$/,
+	"",
+);
 const resend = RESEND_API_KEY ? new Resend(RESEND_API_KEY) : null;
 
 function escapeHtml(value: string): string {
@@ -89,5 +93,118 @@ export async function sendVerificationEmail(
 			error,
 			`Verify URL: ${verifyUrl}`,
 		);
+	}
+}
+
+interface RenewalWarningParams {
+	to: string;
+	fullName: string;
+	planName: string;
+	renewsAt: Date;
+	daysRemaining: number;
+	amountDue: number;
+	walletBalance: number;
+	shortfall: number;
+	paymentMode: "wallet" | "checkout";
+	autoRenew: boolean;
+}
+
+function formatMoney(paise: number): string {
+	return new Intl.NumberFormat("en-IN", {
+		style: "currency",
+		currency: "INR",
+		maximumFractionDigits: paise % 100 === 0 ? 0 : 2,
+	}).format(paise / 100);
+}
+
+function renewalAction(params: RenewalWarningParams): string {
+	if (params.paymentMode !== "wallet" || !params.autoRenew) {
+		return "Your account is set to pay manually, so this term will not renew on its own. Switch to wallet auto-renew or complete checkout before the date above.";
+	}
+	if (params.shortfall > 0) {
+		return `Your wallet is short by ${formatMoney(params.shortfall)}. Load up your wallet or change your payment mode to continue using RDOS and its services.`;
+	}
+	return "Your wallet covers this renewal, so there is nothing for you to do. We will debit it automatically.";
+}
+
+export async function sendRenewalWarningEmail(params: RenewalWarningParams): Promise<void> {
+	const billingUrl = `${PUBLIC_APP_URL}/billing`;
+	const renewsOn = params.renewsAt.toLocaleDateString("en-IN", {
+		year: "numeric",
+		month: "long",
+		day: "numeric",
+	});
+	const action = renewalAction(params);
+	const subject =
+		params.shortfall > 0 || params.paymentMode !== "wallet" || !params.autoRenew
+			? `Action needed: ${params.planName} renews in ${params.daysRemaining} days`
+			: `${params.planName} renews in ${params.daysRemaining} days`;
+
+	if (!resend) {
+		console.warn(
+			`[email] RESEND_API_KEY not set; skipping renewal warning to ${params.to}. ${subject} — ${action}`,
+		);
+		return;
+	}
+
+	const html = `
+<div style="font-family:Arial,sans-serif;background:#f5f7fb;color:#111827;padding:24px;">
+  <div style="max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:14px;overflow:hidden;">
+    <div style="background:#111827;color:#ffffff;padding:20px 24px;">
+      <h1 style="margin:0;font-size:18px;line-height:1.3;">${escapeHtml(params.planName)} renews in ${params.daysRemaining} days</h1>
+    </div>
+    <div style="padding:24px;">
+      <p style="margin:0 0 16px 0;font-size:14px;line-height:1.6;">Hi ${escapeHtml(params.fullName || "there")},</p>
+      <p style="margin:0 0 20px 0;font-size:14px;line-height:1.6;">
+        Your <strong>${escapeHtml(params.planName)}</strong> plan renews on <strong>${escapeHtml(renewsOn)}</strong>.
+      </p>
+      <table style="width:100%;border-collapse:collapse;font-size:13px;margin:0 0 20px 0;">
+        <tr><td style="padding:6px 0;color:#6b7280;">Amount due</td><td style="padding:6px 0;text-align:right;">${formatMoney(params.amountDue)}</td></tr>
+        <tr><td style="padding:6px 0;color:#6b7280;">Wallet balance</td><td style="padding:6px 0;text-align:right;">${formatMoney(params.walletBalance)}</td></tr>
+        ${
+					params.shortfall > 0
+						? `<tr><td style="padding:6px 0;color:#b91c1c;">Shortfall</td><td style="padding:6px 0;text-align:right;color:#b91c1c;font-weight:600;">${formatMoney(params.shortfall)}</td></tr>`
+						: ""
+				}
+      </table>
+      <p style="margin:0 0 24px 0;font-size:14px;line-height:1.6;">${escapeHtml(action)}</p>
+      <p style="margin:0 0 24px 0;">
+        <a href="${billingUrl}" style="display:inline-block;background:#7c3aed;color:#ffffff;text-decoration:none;padding:10px 20px;border-radius:8px;font-size:14px;font-weight:600;">
+          Open billing
+        </a>
+      </p>
+      <p style="margin:0;font-size:12px;color:#6b7280;word-break:break-all;">${billingUrl}</p>
+    </div>
+  </div>
+</div>
+`.trim();
+
+	const text = [
+		`Hi ${params.fullName || "there"},`,
+		"",
+		`Your ${params.planName} plan renews on ${renewsOn} (${params.daysRemaining} days away).`,
+		"",
+		`Amount due:     ${formatMoney(params.amountDue)}`,
+		`Wallet balance: ${formatMoney(params.walletBalance)}`,
+		...(params.shortfall > 0 ? [`Shortfall:      ${formatMoney(params.shortfall)}`] : []),
+		"",
+		action,
+		"",
+		billingUrl,
+	].join("\n");
+
+	try {
+		const result = await resend.emails.send({
+			from: RESEND_FROM_EMAIL,
+			to: params.to,
+			subject,
+			html,
+			text,
+		});
+		if (result.error) {
+			console.error(`[email] Failed to send renewal warning to ${params.to}:`, result.error);
+		}
+	} catch (error) {
+		console.error(`[email] Failed to send renewal warning to ${params.to}:`, error);
 	}
 }

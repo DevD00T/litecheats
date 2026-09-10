@@ -31,6 +31,13 @@ import {
 	type VerifyEmailResponse,
 } from "../../shared/auth";
 import {
+	BILLING_ADMIN_BASE_PATH,
+	BILLING_BASE_PATH,
+	type BillingSubscriptionResponse,
+	RAZORPAY_WEBHOOK_BASE_PATH,
+	RAZORPAY_WEBHOOK_PATH,
+} from "../../shared/billing";
+import {
 	type AdminCreateReleasePayload,
 	type AdminDeleteArtifactResponse,
 	type AdminDeleteReleaseResponse,
@@ -52,6 +59,26 @@ import {
 	type StatusSummaryResponse,
 } from "../../shared/status";
 import {
+	BillingError,
+	adminCreateSubscription,
+	adminDeleteSubscription,
+	adminUpdateOrder,
+	cancelSubscription,
+	createCheckout,
+	getAdminOrders,
+	getBillingPlansResponse,
+	getOrdersForUser,
+	getPaymentHistoryForUser,
+	getSubscriptionForUser,
+	handleRazorpayWebhook,
+	parseAdminCreateSubscriptionPayload,
+	parseAdminUpdateOrderPayload,
+	parseCancelSubscriptionPayload,
+	parseCreateCheckoutPayload,
+	parseVerifyCheckoutPayload,
+	verifyCheckout,
+} from "./billing";
+import {
 	type ReleaseArtifactDocument,
 	type ReleaseVersionDocument,
 	type SessionDocument,
@@ -64,6 +91,7 @@ import {
 	listActiveSessionsForUser as dbListActiveSessionsForUser,
 	deleteArtifactById,
 	deleteArtifactsByReleaseId,
+	deleteBillingRecordsForUser,
 	deleteEmailVerificationToken,
 	deleteEmailVerificationTokensForUser,
 	deleteExpiredSessionsForUser,
@@ -71,6 +99,7 @@ import {
 	deleteSessionById,
 	deleteSessionByIdForUser,
 	deleteUserById,
+	deleteWalletDataForUser,
 	findAnyLatestRelease,
 	findArtifactBlobById,
 	findArtifactByLookup,
@@ -102,6 +131,18 @@ import {
 	updateUserFields,
 } from "./db";
 import { sendVerificationEmail } from "./email";
+import { isRazorpayConfigured, isRazorpayWebhookConfigured } from "./razorpay";
+import {
+	createWalletTopup,
+	getRenewalNoticeForUser,
+	getWalletForUser,
+	parseVerifyWalletTopupPayload,
+	parseWalletPreferencesPayload,
+	parseWalletTopupPayload,
+	setWalletPreferences,
+	startRenewalSweep,
+	verifyWalletTopup,
+} from "./wallet";
 
 const ONE_DAY_MS = AUTH_COOKIE_MAX_AGE_SECONDS * 1000;
 const SESSION_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
@@ -130,6 +171,8 @@ const RELEASE_TARGET_MAX_LENGTH = 100;
 const RELEASE_FILENAME_MAX_LENGTH = 255;
 const RELEASE_UPLOAD_MAX_BYTES = Number(Bun.env.RELEASE_UPLOAD_MAX_BYTES ?? 1024 * 1024 * 1024);
 const AUTH_VERIFY_EMAIL_RATE_LIMIT = Number(Bun.env.AUTH_VERIFY_EMAIL_RATE_LIMIT ?? 10);
+const BILLING_RATE_LIMIT = Number(Bun.env.BILLING_RATE_LIMIT ?? 30);
+const RAZORPAY_WEBHOOK_MAX_BYTES = 256 * 1024;
 const EMAIL_VERIFICATION_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const PUBLIC_APP_URL = (Bun.env.PUBLIC_APP_URL?.trim() || "http://localhost:8080").replace(
 	/\/+$/,
@@ -1375,6 +1418,8 @@ async function deleteUser(userId: string): Promise<void> {
 	await getDb();
 	deleteUserById(userId);
 	dbDeleteSessionsByUserId(userId);
+	deleteBillingRecordsForUser(userId);
+	deleteWalletDataForUser(userId);
 }
 
 async function requirePrivilegedSession(request: Request): Promise<ResolvedSessionContext> {
@@ -1860,9 +1905,7 @@ async function checkTelegramWebhook(): Promise<StatusCheckResult> {
 		};
 	}
 
-	const hasWebhookBase = Boolean(
-		(Bun.env.TELEGRAM_WEBHOOK_BASE_URL ?? Bun.env.API_URL)?.trim(),
-	);
+	const hasWebhookBase = Boolean((Bun.env.TELEGRAM_WEBHOOK_BASE_URL ?? Bun.env.API_URL)?.trim());
 	return {
 		status: "operational",
 		latencyMs: Date.now() - startedAt,
@@ -1956,6 +1999,251 @@ async function handleStatusSummary(request: Request): Promise<Response> {
 	return jsonResponse(request, 200, response);
 }
 
+async function requireBillingSession(request: Request): Promise<ResolvedSessionContext> {
+	const session = await resolveSessionUser(request);
+	if (!session) {
+		throw new HttpError(401, "Sign in to manage your subscription.");
+	}
+	return session;
+}
+
+async function handleBillingPlans(request: Request): Promise<Response> {
+	assertWithinRateLimit(request, "billing:plans", BILLING_RATE_LIMIT);
+	return jsonResponse(request, 200, getBillingPlansResponse());
+}
+
+async function handleBillingCheckout(request: Request): Promise<Response> {
+	assertWithinRateLimit(request, "billing:checkout", BILLING_RATE_LIMIT);
+	const session = await requireBillingSession(request);
+	const payload = parseCreateCheckoutPayload(await readRequestJson(request));
+	const response = await createCheckout(session.user, payload);
+	return jsonResponse(request, 201, response);
+}
+
+async function handleBillingVerify(request: Request): Promise<Response> {
+	assertWithinRateLimit(request, "billing:verify", BILLING_RATE_LIMIT);
+	const session = await requireBillingSession(request);
+	const payload = parseVerifyCheckoutPayload(await readRequestJson(request));
+	const subscription = await verifyCheckout(session.user, payload);
+	const response: BillingSubscriptionResponse = { subscription };
+	return jsonResponse(request, 200, response);
+}
+
+async function handleBillingSubscription(request: Request): Promise<Response> {
+	assertWithinRateLimit(request, "billing:subscription", AUTH_SESSION_RATE_LIMIT);
+	const session = await requireBillingSession(request);
+	const subscription = await getSubscriptionForUser(session.user._id);
+	const response: BillingSubscriptionResponse = { subscription };
+	return jsonResponse(request, 200, response);
+}
+
+async function handleBillingCancel(request: Request): Promise<Response> {
+	assertWithinRateLimit(request, "billing:cancel", BILLING_RATE_LIMIT);
+	const session = await requireBillingSession(request);
+	const payload = parseCancelSubscriptionPayload(await readRequestJson(request));
+	const subscription = await cancelSubscription(session.user._id, payload);
+	const response: BillingSubscriptionResponse = { subscription };
+	return jsonResponse(request, 200, response);
+}
+
+async function handleBillingHistory(request: Request): Promise<Response> {
+	assertWithinRateLimit(request, "billing:history", AUTH_SESSION_RATE_LIMIT);
+	const session = await requireBillingSession(request);
+	const response = await getPaymentHistoryForUser(session.user._id);
+	return jsonResponse(request, 200, response);
+}
+
+/**
+ * Razorpay signs the exact request bytes, so this handler reads the body as raw
+ * text and never re-serialises it. It is deliberately unauthenticated — the
+ * HMAC over the body is the authentication.
+ */
+async function handleRazorpayWebhookRequest(request: Request): Promise<Response> {
+	const contentLength = Number(request.headers.get("content-length") ?? "0");
+	if (Number.isFinite(contentLength) && contentLength > RAZORPAY_WEBHOOK_MAX_BYTES) {
+		throw new HttpError(413, "Webhook payload is too large.");
+	}
+
+	const rawBody = await request.text();
+	const signature = request.headers.get("x-razorpay-signature");
+	const eventId = request.headers.get("x-razorpay-event-id");
+
+	const result = await handleRazorpayWebhook(rawBody, signature, eventId);
+	if (result.duplicate) {
+		console.log(`[billing] Ignored duplicate Razorpay webhook: ${result.event}`);
+	} else if (!result.handled) {
+		console.log(`[billing] Received unhandled Razorpay webhook: ${result.event}`);
+	} else {
+		console.log(`[billing] Processed Razorpay webhook: ${result.event}`);
+	}
+
+	return jsonResponse(request, 200, { received: true, event: result.event });
+}
+
+async function handleBillingOrders(request: Request): Promise<Response> {
+	assertWithinRateLimit(request, "billing:orders", AUTH_SESSION_RATE_LIMIT);
+	const session = await requireBillingSession(request);
+	const response = await getOrdersForUser(session.user._id);
+	return jsonResponse(request, 200, response);
+}
+
+async function handleAdminListOrders(request: Request): Promise<Response> {
+	assertWithinRateLimit(request, "admin:orders:list", AUTH_SESSION_RATE_LIMIT);
+	await requirePrivilegedSession(request);
+	const response = await getAdminOrders();
+	return jsonResponse(request, 200, response);
+}
+
+async function handleAdminUpdateOrder(request: Request, orderId: string): Promise<Response> {
+	assertWithinRateLimit(request, "admin:orders:update", AUTH_SESSION_RATE_LIMIT);
+	await requirePrivilegedSession(request);
+	const patch = parseAdminUpdateOrderPayload(await readRequestJson(request));
+	const response = await adminUpdateOrder(orderId, patch);
+	return jsonResponse(request, 200, response);
+}
+
+async function handleAdminCreateSubscription(request: Request): Promise<Response> {
+	assertWithinRateLimit(request, "admin:orders:create", AUTH_SESSION_RATE_LIMIT);
+	const session = await requirePrivilegedSession(request);
+	const payload = parseAdminCreateSubscriptionPayload(await readRequestJson(request));
+	const response = await adminCreateSubscription(payload, session.user.email);
+	return jsonResponse(request, 201, response);
+}
+
+async function handleAdminDeleteSubscription(
+	request: Request,
+	subscriptionId: string,
+): Promise<Response> {
+	assertWithinRateLimit(request, "admin:orders:delete", AUTH_SESSION_RATE_LIMIT);
+	const session = await requirePrivilegedSession(request);
+	const response = await adminDeleteSubscription(subscriptionId, session.user.email);
+	return jsonResponse(request, 200, response);
+}
+
+async function routeAdminBillingRequest(request: Request, url: URL): Promise<Response> {
+	if (request.method === "GET" && url.pathname === `${BILLING_ADMIN_BASE_PATH}/orders`) {
+		return handleAdminListOrders(request);
+	}
+
+	if (request.method === "POST" && url.pathname === `${BILLING_ADMIN_BASE_PATH}/orders`) {
+		return handleAdminCreateSubscription(request);
+	}
+
+	const orderMatch = url.pathname.match(new RegExp(`^${BILLING_ADMIN_BASE_PATH}/orders/([^/]+)$`));
+
+	if (orderMatch && request.method === "PATCH") {
+		const orderId = decodeURIComponent(orderMatch[1] ?? "");
+		if (!orderId) {
+			throw new HttpError(400, "Order id is required.");
+		}
+		return handleAdminUpdateOrder(request, orderId);
+	}
+
+	if (orderMatch && request.method === "DELETE") {
+		const orderId = decodeURIComponent(orderMatch[1] ?? "");
+		if (!orderId) {
+			throw new HttpError(400, "Order id is required.");
+		}
+		return handleAdminDeleteSubscription(request, orderId);
+	}
+
+	return jsonResponse(request, 404, buildErrorResponse("Admin billing resource not found."));
+}
+
+async function handleWalletGet(request: Request): Promise<Response> {
+	assertWithinRateLimit(request, "billing:wallet", AUTH_SESSION_RATE_LIMIT);
+	const session = await requireBillingSession(request);
+	return jsonResponse(request, 200, await getWalletForUser(session.user._id));
+}
+
+async function handleWalletPreferences(request: Request): Promise<Response> {
+	assertWithinRateLimit(request, "billing:wallet:prefs", BILLING_RATE_LIMIT);
+	const session = await requireBillingSession(request);
+	const patch = parseWalletPreferencesPayload(await readRequestJson(request));
+	return jsonResponse(request, 200, await setWalletPreferences(session.user._id, patch));
+}
+
+async function handleWalletTopup(request: Request): Promise<Response> {
+	assertWithinRateLimit(request, "billing:wallet:topup", BILLING_RATE_LIMIT);
+	const session = await requireBillingSession(request);
+	const payload = parseWalletTopupPayload(await readRequestJson(request));
+	return jsonResponse(request, 201, await createWalletTopup(session.user, payload));
+}
+
+async function handleWalletTopupVerify(request: Request): Promise<Response> {
+	assertWithinRateLimit(request, "billing:wallet:verify", BILLING_RATE_LIMIT);
+	const session = await requireBillingSession(request);
+	const payload = parseVerifyWalletTopupPayload(await readRequestJson(request));
+	return jsonResponse(request, 200, await verifyWalletTopup(session.user, payload));
+}
+
+async function handleRenewalNotice(request: Request): Promise<Response> {
+	assertWithinRateLimit(request, "billing:renewal", AUTH_SESSION_RATE_LIMIT);
+	const session = await requireBillingSession(request);
+	const renewal = await getRenewalNoticeForUser(session.user._id);
+	return jsonResponse(request, 200, { renewal });
+}
+
+async function routeBillingRequest(request: Request, url: URL): Promise<Response> {
+	if (request.method === "GET" && url.pathname === `${BILLING_BASE_PATH}/plans`) {
+		return handleBillingPlans(request);
+	}
+
+	if (request.method === "POST" && url.pathname === `${BILLING_BASE_PATH}/checkout`) {
+		return handleBillingCheckout(request);
+	}
+
+	if (request.method === "POST" && url.pathname === `${BILLING_BASE_PATH}/verify`) {
+		return handleBillingVerify(request);
+	}
+
+	if (request.method === "GET" && url.pathname === `${BILLING_BASE_PATH}/subscription`) {
+		return handleBillingSubscription(request);
+	}
+
+	if (request.method === "POST" && url.pathname === `${BILLING_BASE_PATH}/subscription/cancel`) {
+		return handleBillingCancel(request);
+	}
+
+	if (request.method === "GET" && url.pathname === `${BILLING_BASE_PATH}/payments`) {
+		return handleBillingHistory(request);
+	}
+
+	if (request.method === "GET" && url.pathname === `${BILLING_BASE_PATH}/wallet`) {
+		return handleWalletGet(request);
+	}
+
+	if (request.method === "PATCH" && url.pathname === `${BILLING_BASE_PATH}/wallet`) {
+		return handleWalletPreferences(request);
+	}
+
+	if (request.method === "POST" && url.pathname === `${BILLING_BASE_PATH}/wallet/topup`) {
+		return handleWalletTopup(request);
+	}
+
+	if (request.method === "POST" && url.pathname === `${BILLING_BASE_PATH}/wallet/topup/verify`) {
+		return handleWalletTopupVerify(request);
+	}
+
+	if (request.method === "GET" && url.pathname === `${BILLING_BASE_PATH}/renewal`) {
+		return handleRenewalNotice(request);
+	}
+
+	if (request.method === "GET" && url.pathname === `${BILLING_BASE_PATH}/orders`) {
+		return handleBillingOrders(request);
+	}
+
+	return jsonResponse(request, 404, buildErrorResponse("Billing resource not found."));
+}
+
+async function routeRazorpayRequest(request: Request, url: URL): Promise<Response> {
+	if (request.method === "POST" && url.pathname === RAZORPAY_WEBHOOK_PATH) {
+		return handleRazorpayWebhookRequest(request);
+	}
+
+	return jsonResponse(request, 404, buildErrorResponse("Razorpay resource not found."));
+}
+
 async function routeStatusRequest(request: Request, url: URL): Promise<Response> {
 	if (request.method === "GET" && url.pathname === `${STATUS_BASE_PATH}/summary`) {
 		return handleStatusSummary(request);
@@ -2015,8 +2303,22 @@ async function routeRequest(request: Request): Promise<Response> {
 		return routeStatusRequest(request, url);
 	}
 
+	// Razorpay posts server-to-server with no session cookie, so the webhook is
+	// matched before the authenticated prefix check below.
+	if (url.pathname.startsWith(RAZORPAY_WEBHOOK_BASE_PATH)) {
+		return routeRazorpayRequest(request, url);
+	}
+
 	if (!url.pathname.startsWith(AUTH_BASE_PATH)) {
 		return jsonResponse(request, 404, buildErrorResponse("Not Found"));
+	}
+
+	if (url.pathname.startsWith(BILLING_BASE_PATH)) {
+		return routeBillingRequest(request, url);
+	}
+
+	if (url.pathname.startsWith(BILLING_ADMIN_BASE_PATH)) {
+		return routeAdminBillingRequest(request, url);
 	}
 
 	if (request.method === "GET" && url.pathname === `${AUTH_ADMIN_BASE_PATH}/releases`) {
@@ -2156,11 +2458,20 @@ async function routeRequest(request: Request): Promise<Response> {
 	return jsonResponse(request, 405, buildErrorResponse("Method Not Allowed"));
 }
 
+/**
+ * The whole API as a single request handler. Exported so a host that already
+ * owns a listener can dispatch straight into it instead of proxying over
+ * loopback, and so tests can bind their own port.
+ */
+export async function handleAuthApiRequest(request: Request): Promise<Response> {
+	return handleRequestWithErrorBoundary(request);
+}
+
 async function handleRequestWithErrorBoundary(request: Request): Promise<Response> {
 	try {
 		return await routeRequest(request);
 	} catch (error) {
-		if (error instanceof HttpError) {
+		if (error instanceof HttpError || error instanceof BillingError) {
 			return jsonResponse(request, error.status, buildErrorResponse(error.message));
 		}
 
@@ -2182,5 +2493,21 @@ export async function startAuthServer() {
 	console.log(
 		`Status API available at http://localhost:${AUTH_API_PORT}${STATUS_BASE_PATH}/summary`,
 	);
+	console.log(
+		`Billing API available at http://localhost:${AUTH_API_PORT}${BILLING_BASE_PATH}/plans`,
+	);
+
+	startRenewalSweep();
+
+	if (!isRazorpayConfigured()) {
+		console.warn(
+			"[billing] RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET are not set — checkout is disabled.",
+		);
+	} else if (!isRazorpayWebhookConfigured()) {
+		console.warn(
+			`[billing] RAZORPAY_WEBHOOK_SECRET is not set — deliveries to ${RAZORPAY_WEBHOOK_PATH} will be rejected.`,
+		);
+	}
+
 	return app;
 }
