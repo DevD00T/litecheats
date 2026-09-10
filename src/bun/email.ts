@@ -208,3 +208,78 @@ export async function sendRenewalWarningEmail(params: RenewalWarningParams): Pro
 		console.error(`[email] Failed to send renewal warning to ${params.to}:`, error);
 	}
 }
+
+/**
+ * Sends the signup verification code. Uses RESEND_FROM_EMAIL, the same sender
+ * as every other transactional message, so the address stays consistent and
+ * keeps whatever domain reputation it has built.
+ */
+export async function sendVerificationCodeEmail(
+	to: string,
+	fullName: string,
+	code: string,
+	expiresInMinutes: number,
+): Promise<void> {
+	const subject = `${code} is your Litecheats verification code`;
+
+	if (!resend) {
+		console.warn(
+			`[email] RESEND_API_KEY not set; skipping verification code to ${to}. Code: ${code}`,
+		);
+		return;
+	}
+
+	const html = `
+<div style="font-family:Arial,sans-serif;background:#f5f7fb;color:#111827;padding:24px;">
+  <div style="max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:14px;overflow:hidden;">
+    <div style="background:#111827;color:#ffffff;padding:20px 24px;">
+      <h1 style="margin:0;font-size:18px;line-height:1.3;">Confirm your email address</h1>
+    </div>
+    <div style="padding:24px;">
+      <p style="margin:0 0 16px 0;font-size:14px;line-height:1.6;">Hi ${escapeHtml(fullName || "there")},</p>
+      <p style="margin:0 0 20px 0;font-size:14px;line-height:1.6;">
+        Enter this code to finish setting up your Litecheats account:
+      </p>
+      <div style="margin:0 0 20px 0;padding:18px;background:#f3f4f6;border:1px solid #e5e7eb;border-radius:10px;text-align:center;">
+        <span style="font-family:'Courier New',monospace;font-size:32px;font-weight:700;letter-spacing:10px;color:#111827;">${escapeHtml(code)}</span>
+      </div>
+      <p style="margin:0 0 8px 0;font-size:13px;line-height:1.6;color:#6b7280;">
+        This code expires in ${expiresInMinutes} minutes and can only be used once.
+      </p>
+      <p style="margin:0;font-size:12px;color:#6b7280;">
+        If you didn't create a Litecheats account, you can ignore this email. Never share this code
+        with anyone — our team will never ask you for it.
+      </p>
+    </div>
+  </div>
+</div>
+`.trim();
+
+	const text = [
+		`Hi ${fullName || "there"},`,
+		"",
+		"Enter this code to finish setting up your Litecheats account:",
+		"",
+		`    ${code}`,
+		"",
+		`This code expires in ${expiresInMinutes} minutes and can only be used once.`,
+		"",
+		"If you didn't create a Litecheats account, you can ignore this email.",
+		"Never share this code with anyone - our team will never ask you for it.",
+	].join("\n");
+
+	try {
+		const result = await resend.emails.send({
+			from: RESEND_FROM_EMAIL,
+			to,
+			subject,
+			html,
+			text,
+		});
+		if (result.error) {
+			console.error(`[email] Failed to send verification code to ${to}:`, result.error);
+		}
+	} catch (error) {
+		console.error(`[email] Failed to send verification code to ${to}:`, error);
+	}
+}

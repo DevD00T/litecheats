@@ -7,7 +7,7 @@ import { useLayoutEffect, useRef } from "react";
 const practices = [
 	{
 		title: "Password & session handling",
-		text: "Passwords are hashed with Bun's built-in Argon2 password hasher, never stored or logged in plain text. Sessions are HttpOnly, SameSite cookies bound to a device fingerprint, so a stolen cookie alone cannot be replayed from another device.",
+		text: "Passwords are hashed with a memory-hard algorithm and are never stored or logged in plain text. Sessions are bound to the device that created them, so a stolen session alone cannot be replayed elsewhere.",
 	},
 	{
 		title: "Rate limiting & abuse controls",

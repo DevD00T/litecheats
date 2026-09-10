@@ -79,8 +79,10 @@ export function SignupPage() {
 		setIsSubmitting(true);
 		try {
 			await signup({ fullName, company, email, password: passwordValue });
-			toast.success("Registration completed.");
-			navigate(redirectTo, { replace: true });
+			toast.success("Account created. Check your email for a verification code.");
+			// Signup is not finished until the emailed code is confirmed, so send
+			// them to step 2 and carry the original destination through.
+			navigate(`/verify-email?redirect=${encodeURIComponent(redirectTo)}`, { replace: true });
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unable to create account.";
 			toast.error(message);
@@ -99,7 +101,7 @@ export function SignupPage() {
 						</Badge>
 						<CardTitle className="font-heading text-3xl">Create your account</CardTitle>
 						<CardDescription>
-							Register to open a secure session with Bun-managed cookies.
+							Create an account to manage your fleet, billing, and downloads.
 						</CardDescription>
 					</CardHeader>
 					<CardContent>
@@ -114,7 +116,7 @@ export function SignupPage() {
 								<label htmlFor="company" className="text-sm font-medium">
 									Company
 								</label>
-								<Input id="company" name="company" placeholder="Litecheats Technologies" required />
+								<Input id="company" name="company" placeholder="Acme Robotics" required />
 							</div>
 							<div className="grid gap-2">
 								<label htmlFor="email" className="text-sm font-medium">

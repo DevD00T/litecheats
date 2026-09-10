@@ -16,6 +16,7 @@ import {
 	type AuthSuccessResponse,
 	type AuthUser,
 	DEFAULT_USER_ROLE,
+	EMAIL_VERIFICATION_CODE_LENGTH,
 	type LoginPayload,
 	type LogoutAllSessionsResponse,
 	type ResendVerificationResponse,
@@ -92,8 +93,7 @@ import {
 	deleteArtifactById,
 	deleteArtifactsByReleaseId,
 	deleteBillingRecordsForUser,
-	deleteEmailVerificationToken,
-	deleteEmailVerificationTokensForUser,
+	deleteEmailVerificationCode,
 	deleteExpiredSessionsForUser,
 	deleteReleaseById,
 	deleteSessionById,
@@ -105,15 +105,15 @@ import {
 	findArtifactByLookup,
 	findArtifactMetaById,
 	findConflictingArtifact,
-	findEmailVerificationToken,
+	findEmailVerificationCode,
 	findMostRecentReleaseByPublishedDesc,
 	findReleaseById,
 	findSessionById,
 	findUserByEmailLower,
 	findUserById,
 	getDb,
+	incrementEmailVerificationAttempts,
 	insertArtifact,
-	insertEmailVerificationToken,
 	insertRelease,
 	insertSession,
 	insertUser,
@@ -129,8 +129,9 @@ import {
 	updateArtifactVersionForRelease,
 	updateReleaseFields,
 	updateUserFields,
+	upsertEmailVerificationCode,
 } from "./db";
-import { sendVerificationEmail } from "./email";
+import { sendVerificationCodeEmail } from "./email";
 import { isRazorpayConfigured, isRazorpayWebhookConfigured } from "./razorpay";
 import {
 	createWalletTopup,
@@ -173,7 +174,11 @@ const RELEASE_UPLOAD_MAX_BYTES = Number(Bun.env.RELEASE_UPLOAD_MAX_BYTES ?? 1024
 const AUTH_VERIFY_EMAIL_RATE_LIMIT = Number(Bun.env.AUTH_VERIFY_EMAIL_RATE_LIMIT ?? 10);
 const BILLING_RATE_LIMIT = Number(Bun.env.BILLING_RATE_LIMIT ?? 30);
 const RAZORPAY_WEBHOOK_MAX_BYTES = 256 * 1024;
-const EMAIL_VERIFICATION_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
+const EMAIL_VERIFICATION_CODE_TTL_MS = Number(Bun.env.AUTH_VERIFY_CODE_TTL_MS ?? 15 * 60 * 1000);
+/** Wrong guesses allowed before the code is burned and a new one is required. */
+const EMAIL_VERIFICATION_MAX_ATTEMPTS = 5;
+/** Minimum gap between code emails, so resend cannot be used to spam an inbox. */
+const EMAIL_VERIFICATION_RESEND_COOLDOWN_MS = 60 * 1000;
 const PUBLIC_APP_URL = (Bun.env.PUBLIC_APP_URL?.trim() || "http://localhost:8080").replace(
 	/\/+$/,
 	"",
@@ -209,9 +214,18 @@ function createUuidV7(): string {
 	return typeof maybeUuidV7 === "function" ? maybeUuidV7() : crypto.randomUUID();
 }
 
-function createVerificationToken(): string {
-	const bytes = crypto.getRandomValues(new Uint8Array(32));
-	return Buffer.from(bytes).toString("hex");
+/**
+ * A uniformly distributed numeric code. Rejection sampling avoids the modulo
+ * bias a plain `% 10` would introduce, which would make some digits likelier.
+ */
+function createVerificationCode(): string {
+	let code = "";
+	while (code.length < EMAIL_VERIFICATION_CODE_LENGTH) {
+		const byte = crypto.getRandomValues(new Uint8Array(1))[0] ?? 0;
+		if (byte >= 250) continue;
+		code += String(byte % 10);
+	}
+	return code;
 }
 
 function normalizeEmail(email: string): string {
@@ -593,13 +607,17 @@ function parseVerifyEmailPayload(payload: unknown): VerifyEmailPayload {
 		throw new HttpError(400, "Invalid verification payload.");
 	}
 
-	const body = payload as Record<string, unknown>;
-	const token = typeof body.token === "string" ? body.token.trim() : "";
-	if (!token) {
-		throw new HttpError(400, "token is required.");
+	// People paste codes with spaces or dashes from the email; strip anything
+	// that is not a digit before validating rather than rejecting the paste.
+	const code = String((payload as Record<string, unknown>).code ?? "").replace(/\D/g, "");
+	if (code.length !== EMAIL_VERIFICATION_CODE_LENGTH) {
+		throw new HttpError(
+			400,
+			`Enter the ${EMAIL_VERIFICATION_CODE_LENGTH}-digit code from your email.`,
+		);
 	}
 
-	return { token };
+	return { code };
 }
 
 function parseUpdatePayload(payload: unknown): UpdateProfilePayload {
@@ -1251,14 +1269,36 @@ async function createUser(payload: SignupPayload): Promise<WithId<UserDocument>>
 	return user;
 }
 
-async function sendVerificationEmailToUser(user: WithId<UserDocument>): Promise<void> {
+/**
+ * Issues a fresh code, replacing any previous one, and hands back the plaintext
+ * for delivery. Storing the code is awaited by callers so it is durable the
+ * moment signup responds; only the email send is allowed to lag behind.
+ */
+async function issueVerificationCode(user: WithId<UserDocument>): Promise<string> {
 	await getDb();
-	const token = createVerificationToken();
-	const expiresAt = new Date(Date.now() + EMAIL_VERIFICATION_TOKEN_TTL_MS);
-	deleteEmailVerificationTokensForUser(user._id);
-	insertEmailVerificationToken(token, user._id, expiresAt);
-	const verifyUrl = `${PUBLIC_APP_URL}/verify-email?token=${encodeURIComponent(token)}`;
-	await sendVerificationEmail(user.email, user.fullName, verifyUrl);
+	const code = createVerificationCode();
+	const codeHash = await Bun.password.hash(code);
+	upsertEmailVerificationCode({
+		userId: user._id,
+		codeHash,
+		expiresAt: new Date(Date.now() + EMAIL_VERIFICATION_CODE_TTL_MS),
+	});
+	return code;
+}
+
+function deliverVerificationCode(user: WithId<UserDocument>, code: string): Promise<void> {
+	return sendVerificationCodeEmail(
+		user.email,
+		user.fullName,
+		code,
+		Math.round(EMAIL_VERIFICATION_CODE_TTL_MS / 60_000),
+	);
+}
+
+/** Issues a code and waits for the email to go out. */
+async function sendVerificationEmailToUser(user: WithId<UserDocument>): Promise<void> {
+	const code = await issueVerificationCode(user);
+	await deliverVerificationCode(user, code);
 }
 
 async function findUserByEmail(email: string): Promise<WithId<UserDocument> | null> {
@@ -1582,9 +1622,15 @@ async function handleSignup(request: Request): Promise<Response> {
 	const payload = parseSignupPayload(await readRequestJson(request));
 	assertWithinRateLimit(request, `signup:${normalizeEmail(payload.email)}`, AUTH_SIGNUP_RATE_LIMIT);
 	const user = await createUser(payload);
-	void sendVerificationEmailToUser(user).catch((error) => {
+
+	// The code is stored before responding, so it is already valid when the
+	// browser lands on the verification step. Only delivery is left to run in
+	// the background, since a slow mail provider should not stall signup.
+	const code = await issueVerificationCode(user);
+	void deliverVerificationCode(user, code).catch((error) => {
 		console.error("[auth] Failed to send signup verification email:", error);
 	});
+
 	const session = await createSession(user._id, getSessionRequestMeta(request));
 
 	return jsonResponse(request, 201, buildAuthSuccessResponse(user), {
@@ -1626,23 +1672,54 @@ async function handleLogout(request: Request): Promise<Response> {
 
 async function handleVerifyEmail(request: Request): Promise<Response> {
 	assertWithinRateLimit(request, "verify-email", AUTH_VERIFY_EMAIL_RATE_LIMIT);
+
+	// Signup signs the user in before verification, so the account being
+	// verified is always the session's own. That removes the guessable
+	// identifier a link-based flow would otherwise have to carry around.
+	const session = await resolveSessionUser(request);
+	if (!session) {
+		throw new HttpError(401, "Sign in to verify your email address.");
+	}
+
 	const payload = parseVerifyEmailPayload(await readRequestJson(request));
 	await getDb();
 
-	const record = findEmailVerificationToken(payload.token);
-	if (!record || record.expiresAt.getTime() <= Date.now()) {
-		if (record) deleteEmailVerificationToken(record.token);
-		throw new HttpError(400, "This verification link is invalid or has expired.");
+	const user = session.user;
+	if (sanitizeRoleFlag(user.emailVerified)) {
+		const already: VerifyEmailResponse = { verified: true, email: user.email };
+		return jsonResponse(request, 200, already);
 	}
 
-	const user = findUserById(record.userId);
-	if (!user) {
-		deleteEmailVerificationToken(record.token);
-		throw new HttpError(404, "Account not found.");
+	const record = findEmailVerificationCode(user._id);
+	if (!record) {
+		throw new HttpError(400, "Request a new code to continue.");
+	}
+
+	if (record.expiresAt.getTime() <= Date.now()) {
+		deleteEmailVerificationCode(user._id);
+		throw new HttpError(400, "That code has expired. Request a new one.");
+	}
+
+	if (record.attempts >= EMAIL_VERIFICATION_MAX_ATTEMPTS) {
+		deleteEmailVerificationCode(user._id);
+		throw new HttpError(429, "Too many incorrect codes. Request a new one.");
+	}
+
+	if (!(await Bun.password.verify(payload.code, record.codeHash))) {
+		const attempts = incrementEmailVerificationAttempts(user._id);
+		const remaining = Math.max(0, EMAIL_VERIFICATION_MAX_ATTEMPTS - attempts);
+		if (remaining === 0) {
+			deleteEmailVerificationCode(user._id);
+			throw new HttpError(429, "Too many incorrect codes. Request a new one.");
+		}
+		throw new HttpError(
+			400,
+			`That code is not correct. ${remaining} attempt${remaining === 1 ? "" : "s"} left.`,
+		);
 	}
 
 	updateUserFields(user._id, { emailVerified: true, updatedAt: new Date() });
-	deleteEmailVerificationTokensForUser(user._id);
+	deleteEmailVerificationCode(user._id);
 
 	const response: VerifyEmailResponse = { verified: true, email: user.email };
 	return jsonResponse(request, 200, response);
@@ -1659,8 +1736,26 @@ async function handleResendVerification(request: Request): Promise<Response> {
 		throw new HttpError(400, "Email is already verified.");
 	}
 
+	await getDb();
+	// A per-account cooldown on top of the per-IP rate limit, so one signed-in
+	// account cannot be used to repeatedly mail its own inbox.
+	const existing = findEmailVerificationCode(session.user._id);
+	if (existing) {
+		const elapsed = Date.now() - existing.lastSentAt.getTime();
+		if (elapsed < EMAIL_VERIFICATION_RESEND_COOLDOWN_MS) {
+			const wait = Math.ceil((EMAIL_VERIFICATION_RESEND_COOLDOWN_MS - elapsed) / 1000);
+			throw new HttpError(
+				429,
+				`Wait ${wait} more second${wait === 1 ? "" : "s"} before requesting another code.`,
+			);
+		}
+	}
+
 	await sendVerificationEmailToUser(session.user);
-	const response: ResendVerificationResponse = { sent: true };
+	const response: ResendVerificationResponse = {
+		sent: true,
+		retryAfterSeconds: Math.round(EMAIL_VERIFICATION_RESEND_COOLDOWN_MS / 1000),
+	};
 	return jsonResponse(request, 200, response);
 }
 

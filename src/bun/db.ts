@@ -292,6 +292,18 @@ function runMigrations(instance: Database): void {
 		);
 		CREATE INDEX IF NOT EXISTS email_verifications_user_idx ON email_verifications(userId);
 
+		-- Signup verification is a short numeric code the user types in, not a
+		-- link they click, so exactly one live code per account is all we need.
+		-- The code itself is never stored; only a hash of it.
+		CREATE TABLE IF NOT EXISTS email_verification_codes (
+			userId TEXT PRIMARY KEY,
+			codeHash TEXT NOT NULL,
+			expiresAt TEXT NOT NULL,
+			attempts INTEGER NOT NULL DEFAULT 0,
+			lastSentAt TEXT NOT NULL,
+			createdAt TEXT NOT NULL
+		);
+
 		CREATE TABLE IF NOT EXISTS sessions (
 			id TEXT PRIMARY KEY,
 			userId TEXT NOT NULL,
@@ -1854,4 +1866,74 @@ export function findBillingSubscriptionByPrivateId(
 		.query("SELECT * FROM billing_subscriptions WHERE privateId = ?")
 		.get(privateId) as BillingSubscriptionRow | null;
 	return row ? rowToBillingSubscription(row) : null;
+}
+
+export interface EmailVerificationCodeRecord {
+	userId: string;
+	codeHash: string;
+	expiresAt: Date;
+	attempts: number;
+	lastSentAt: Date;
+	createdAt: Date;
+}
+
+interface EmailVerificationCodeRow {
+	userId: string;
+	codeHash: string;
+	expiresAt: string;
+	attempts: number;
+	lastSentAt: string;
+	createdAt: string;
+}
+
+/** Replaces any live code for this account, so only the newest one works. */
+export function upsertEmailVerificationCode(params: {
+	userId: string;
+	codeHash: string;
+	expiresAt: Date;
+}): void {
+	const now = new Date().toISOString();
+	requireDb()
+		.query(
+			`INSERT INTO email_verification_codes (userId, codeHash, expiresAt, attempts, lastSentAt, createdAt)
+			 VALUES (?, ?, ?, 0, ?, ?)
+			 ON CONFLICT(userId) DO UPDATE SET
+				codeHash = excluded.codeHash,
+				expiresAt = excluded.expiresAt,
+				attempts = 0,
+				lastSentAt = excluded.lastSentAt`,
+		)
+		.run(params.userId, params.codeHash, params.expiresAt.toISOString(), now, now);
+}
+
+export function findEmailVerificationCode(userId: string): EmailVerificationCodeRecord | null {
+	const row = requireDb()
+		.query("SELECT * FROM email_verification_codes WHERE userId = ?")
+		.get(userId) as EmailVerificationCodeRow | null;
+	if (!row) return null;
+
+	return {
+		userId: row.userId,
+		codeHash: row.codeHash,
+		expiresAt: new Date(row.expiresAt),
+		attempts: row.attempts,
+		lastSentAt: new Date(row.lastSentAt),
+		createdAt: new Date(row.createdAt),
+	};
+}
+
+/** Returns the attempt count after incrementing, for lock-out decisions. */
+export function incrementEmailVerificationAttempts(userId: string): number {
+	const instance = requireDb();
+	instance
+		.query("UPDATE email_verification_codes SET attempts = attempts + 1 WHERE userId = ?")
+		.run(userId);
+	const row = instance
+		.query("SELECT attempts FROM email_verification_codes WHERE userId = ?")
+		.get(userId) as { attempts: number } | null;
+	return row?.attempts ?? 0;
+}
+
+export function deleteEmailVerificationCode(userId: string): void {
+	requireDb().query("DELETE FROM email_verification_codes WHERE userId = ?").run(userId);
 }

@@ -61,7 +61,7 @@ export function LoginPage() {
 							Sign In
 						</Badge>
 						<CardTitle className="font-heading text-3xl">Welcome back</CardTitle>
-						<CardDescription>Sign in to manage your Litecheats account session.</CardDescription>
+						<CardDescription>Sign in to manage your Litecheats account.</CardDescription>
 					</CardHeader>
 					<CardContent>
 						<form className="grid gap-4" onSubmit={handleSubmit}>

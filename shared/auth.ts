@@ -112,8 +112,11 @@ export interface AdminDeleteUserResponse {
 	deleted: true;
 }
 
+/** Digits in the signup verification code emailed to a new account. */
+export const EMAIL_VERIFICATION_CODE_LENGTH = 6;
+
 export interface VerifyEmailPayload {
-	token: string;
+	code: string;
 }
 
 export interface VerifyEmailResponse {
@@ -123,4 +126,6 @@ export interface VerifyEmailResponse {
 
 export interface ResendVerificationResponse {
 	sent: true;
+	/** Seconds the caller must wait before another code can be requested. */
+	retryAfterSeconds: number;
 }

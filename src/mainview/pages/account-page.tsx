@@ -2,12 +2,13 @@ import { useAuth } from "@/components/auth/auth-provider";
 import { SubscriptionCard } from "@/components/billing/subscription-card";
 import { AnimatedPage } from "@/components/layout/animated-page";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { authApi } from "@/lib/auth-api";
+import { cn } from "@/lib/utils";
 import { type FormEvent, useCallback, useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import type { AuthSession } from "shared/auth";
 import { toast } from "sonner";
 
@@ -28,7 +29,6 @@ export function AccountPage() {
 	const [isLoadingSessions, setIsLoadingSessions] = useState(false);
 	const [isLoggingOutAll, setIsLoggingOutAll] = useState(false);
 	const [revokingSessionId, setRevokingSessionId] = useState<string | null>(null);
-	const [isResendingVerification, setIsResendingVerification] = useState(false);
 
 	useEffect(() => {
 		setFullName(user?.fullName ?? "");
@@ -134,19 +134,6 @@ export function AccountPage() {
 		}
 	};
 
-	const handleResendVerification = async () => {
-		setIsResendingVerification(true);
-		try {
-			await authApi.resendVerification();
-			toast.success("Verification email sent. Check your inbox.");
-		} catch (error) {
-			const message = error instanceof Error ? error.message : "Failed to send verification email.";
-			toast.error(message);
-		} finally {
-			setIsResendingVerification(false);
-		}
-	};
-
 	const handleRevokeSession = async (sessionId: string, current: boolean) => {
 		setRevokingSessionId(sessionId);
 		try {
@@ -176,19 +163,16 @@ export function AccountPage() {
 							<div>
 								<p className="text-sm font-semibold text-warning">Verify your email</p>
 								<p className="mt-1 text-xs text-warning/85">
-									We sent a verification link to {user.email} when you signed up. Confirm it to
-									secure your account.
+									We sent a verification code to {user.email} when you signed up. Enter it to secure
+									your account and get your verified badge.
 								</p>
 							</div>
-							<Button
-								type="button"
-								variant="outline"
-								size="sm"
-								disabled={isResendingVerification}
-								onClick={() => void handleResendVerification()}
+							<Link
+								to="/verify-email"
+								className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
 							>
-								{isResendingVerification ? "Sending..." : "Resend verification email"}
-							</Button>
+								Enter verification code
+							</Link>
 						</CardContent>
 					</Card>
 				) : null}
