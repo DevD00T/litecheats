@@ -150,7 +150,7 @@ async function pingUrl(url: string): Promise<HttpPingResult> {
 async function seedTelegramAdmins(): Promise<void> {
 	if (!TELEGRAM_ADMIN_USERNAMES.length) return;
 	await getDb();
-	seedTelegramAdminsFromEnv(TELEGRAM_ADMIN_USERNAMES);
+	await seedTelegramAdminsFromEnv(TELEGRAM_ADMIN_USERNAMES);
 }
 
 async function findTelegramAdminByUsername(
@@ -183,7 +183,7 @@ async function rememberAdminChat(ctx: TelegramCommandContext): Promise<void> {
 	if (!username) return;
 
 	await getDb();
-	linkTelegramAdminChat(getTelegramUsernameLower(username), chatId);
+	await linkTelegramAdminChat(getTelegramUsernameLower(username), chatId);
 }
 
 /**
@@ -199,7 +199,7 @@ export async function notifyTelegramAdmins(text: string): Promise<number> {
 
 	await seedTelegramAdmins();
 	await getDb();
-	const recipients = listTelegramAdminChatIds();
+	const recipients = await listTelegramAdminChatIds();
 	if (!recipients.length) {
 		console.warn(
 			"[telegram] No admin has opened a chat with the bot yet, so no order notification was sent.",

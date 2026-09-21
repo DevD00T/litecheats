@@ -82,7 +82,7 @@ cp .env.example .env
 
 Bun automatically loads `.env` files, so no extra dotenv setup is required.
 
-### Auth + SQLite setup
+### Auth + MongoDB setup
 
 The app includes Bun-managed auth with:
 
@@ -90,13 +90,15 @@ The app includes Bun-managed auth with:
 - Session cookies issued by Bun auth server (`Path=/login`, `Max-Age=86400`)
 - Password hashing and verification using `Bun.password`
 - UUIDv7 IDs for users and sessions using `Bun.randomUUIDv7()` (fallback to `crypto.randomUUID`)
-- A `bun:sqlite` database (`src/bun/db.ts`) for users, sessions, releases, release
-  artifacts, and Telegram admins — no external database server to run
+- A MongoDB database (`src/bun/db/`) for users, sessions, releases, release
+  artifacts, Telegram admins, billing and wallets
 
-Set these in `.env` (all optional, shown with their defaults):
+Set these in `.env`. `MONGODB_URI` is required; the rest are optional and shown
+with their defaults:
 
 ```ini
-SQLITE_PATH=./data/litecheats.sqlite
+MONGODB_URI=mongodb+srv://<user>:<password>@<cluster>.mongodb.net/?appName=litecheats
+MONGODB_DB_NAME=litecheats_pwa
 OWNER_EMAIL=owner@litecheats.com
 OWNER_PASSWORD=
 OWNER_FULL_NAME=Owner
@@ -109,8 +111,54 @@ generated and printed once to the server console (grab it from there — it is
 never shown again). If an account already exists with `OWNER_EMAIL`, it is
 promoted to owner/admin instead of creating a duplicate.
 
-The SQLite file lives at `SQLITE_PATH` (default `./data/litecheats.sqlite`,
-gitignored) — back it up like you would any other database file.
+#### Database layout
+
+The database is `MONGODB_DB_NAME` (default `litecheats_pwa`). The schema lives in
+one place, `src/bun/db/schema.ts`, and is applied automatically on every boot, so
+a fresh database needs no manual setup (`bun run db:setup` does it on demand).
+Each collection has a `$jsonSchema` validator and named indexes:
+
+| Collection                                                       | Holds                                                              |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `users`                                                          | Accounts. Unique on `emailLower`.                                  |
+| `sessions`                                                       | Login sessions. Expired ones are purged by a TTL index.            |
+| `email_verifications`, `email_verification_codes`                | Signup verification. `_id` is the token / the user id.             |
+| `release_versions`, `release_artifacts`                          | Release feed and artifact metadata.                                |
+| `release_files.files` / `.chunks`                                | The artifact binaries, in GridFS under the artifact's own `_id`.   |
+| `telegram_admins`                                                | Telegram admins. Unique on `usernameLower`.                        |
+| `billing_subscriptions`, `billing_payments`                      | Orders and payments. Razorpay ids are unique when present.         |
+| `billing_webhook_events`                                         | Webhook idempotency. `_id` is the event id; a TTL index expires it. |
+| `wallet_accounts`, `wallet_transactions`, `wallet_topups`        | Prepaid wallet. `_id` of an account is the user id; balance is never negative. |
+
+Things worth knowing:
+
+- Timestamps are BSON `Date`s, flags are real booleans, roles are a real array.
+- Wallet movements, top-up settlement and wallet-paid renewals use multi-document
+  transactions, so the cluster must be a **replica set** (every Atlas cluster is).
+- The database validates writes. A document that breaks the schema is rejected
+  with error 121 rather than stored.
+- Release binaries are in GridFS because a MongoDB document is capped at 16 MB.
+
+#### Migrating from the old SQLite database
+
+Earlier versions stored everything in a SQLite file. To carry that data over, run
+this once, on the machine that has the file, with `MONGODB_URI` set:
+
+```bash
+bun scripts/migrate-sqlite-to-mongo.ts --dry-run                       # preview, writes nothing
+bun scripts/migrate-sqlite-to-mongo.ts --sqlite=./data/litecheats.sqlite
+```
+
+It is safe to re-run: documents already in MongoDB are never overwritten. Run it
+**before** the first start of the new version, so the owner account comes across
+from SQLite instead of a fresh one being seeded. The SQLite file is opened
+read-only and is left in place.
+
+#### Tests
+
+`bun test src/bun/db` runs the data-layer integration tests against your cluster
+in a throwaway database that is dropped afterwards. They are skipped when
+`MONGODB_URI` is not set.
 
 The Bun auth server runs on `http://localhost:8787` and exposes:
 
@@ -153,7 +201,7 @@ Bot commands included:
 - `/status`
 
 `TELEGRAM_ADMIN_USERNAMES` is a comma-separated bootstrap list. Those usernames are
-seeded into the SQLite database as Telegram owners, and Telegram admins can then
+seeded into the database as Telegram owners, and Telegram admins can then
 add more Telegram admins with `/admins add @username`.
 
 `/status` is admin-only and checks Telegram bot connectivity, Telegram webhook
@@ -181,9 +229,9 @@ This uses `untun` to expose local webhook URL automatically.
 
 When `BOT_TOKEN` is present and `TELEGRAM_BOT_ENABLED=true`, the bot starts with Bun runtimes (`bun run start`, `bun run web:fullstack`, and desktop Bun main process).
 
-### Downloads API (SQLite-backed)
+### Downloads API (MongoDB-backed)
 
-The app exposes a release feed and artifact download API backed by SQLite,
+The app exposes a release feed and artifact download API backed by MongoDB (binaries in GridFS),
 with artifact bytes stored directly as BLOBs in the `release_artifacts` table:
 
 - `GET /downloads/releases`
@@ -317,7 +365,7 @@ bun run build:stable
 
 This generates the app bundle plus patch files for delta updates. Upload the build output to your `baseUrl` location only if you intentionally enable updater-based distribution.
 
-### macOS DMG release publishing (SQLite-backed downloads)
+### macOS DMG release publishing (MongoDB-backed downloads)
 
 The app includes a release publisher flow for macOS DMG artifacts:
 

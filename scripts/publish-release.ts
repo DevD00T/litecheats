@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { stat } from "node:fs/promises";
 import { basename, extname, resolve } from "node:path";
 import {
+	closeDb,
 	deleteArtifactById,
 	findArtifactByLookup,
 	findReleaseByVersion,
@@ -198,22 +199,22 @@ async function publishRelease(options: PublishOptions): Promise<void> {
 
 	await getDb();
 
-	const existingRelease = findReleaseByVersion(options.version);
+	const existingRelease = await findReleaseByVersion(options.version);
 	const releaseId = existingRelease?._id ?? crypto.randomUUID();
 
 	if (options.latest) {
-		unsetLatestExcept(releaseId, now);
+		await unsetLatestExcept(releaseId, now);
 	}
 
 	if (existingRelease) {
-		updateReleaseFields(existingRelease._id, {
+		await updateReleaseFields(existingRelease._id, {
 			notes: options.notes,
 			publishedAt: now,
 			isLatest: options.latest,
 			updatedAt: now,
 		});
 	} else {
-		insertRelease({
+		await insertRelease({
 			_id: releaseId,
 			version: options.version,
 			notes: options.notes,
@@ -224,18 +225,18 @@ async function publishRelease(options: PublishOptions): Promise<void> {
 		});
 	}
 
-	const existingArtifact = findArtifactByLookup(
+	const existingArtifact = await findArtifactByLookup(
 		releaseId,
 		options.platform,
 		options.format,
 		options.target,
 	);
 	if (existingArtifact) {
-		deleteArtifactById(existingArtifact._id);
+		await deleteArtifactById(existingArtifact._id);
 	}
 
 	const artifactId = crypto.randomUUID();
-	insertArtifact(
+	await insertArtifact(
 		{
 			_id: artifactId,
 			releaseId,
@@ -253,7 +254,7 @@ async function publishRelease(options: PublishOptions): Promise<void> {
 	);
 
 	if (options.latest) {
-		setReleaseLatest(releaseId, true, now);
+		await setReleaseLatest(releaseId, true, now);
 	}
 
 	console.log(`Published release ${options.version}`);
@@ -265,6 +266,7 @@ async function publishRelease(options: PublishOptions): Promise<void> {
 	console.log(`Download API: /downloads/artifacts/${artifactId}/file`);
 }
 
+let exitCode = 0;
 try {
 	const options = parseOptions(process.argv.slice(2));
 	await publishRelease(options);
@@ -272,5 +274,9 @@ try {
 	const message = error instanceof Error ? error.message : "Failed to publish release.";
 	console.error(message);
 	printUsage();
-	process.exit(1);
+	exitCode = 1;
+} finally {
+	// The MongoDB connection would otherwise keep the process alive after publishing.
+	await closeDb();
 }
+process.exit(exitCode);

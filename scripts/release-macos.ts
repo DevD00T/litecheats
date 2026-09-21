@@ -130,7 +130,7 @@ function runPublish(version: string, artifactPath: string, notes: string, target
 		publishCmd.push("--notes", notes);
 	}
 
-	runCommand(publishCmd, "Publishing macOS release to SQLite");
+	runCommand(publishCmd, "Publishing macOS release to MongoDB");
 }
 
 async function main(): Promise<void> {

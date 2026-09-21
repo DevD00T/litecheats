@@ -1,5 +1,5 @@
 export const DOWNLOADS_BASE_PATH = "/downloads";
-export const RELEASE_FILES_BUCKET = "release_artifacts";
+export const RELEASE_FILES_BUCKET = "release_files";
 
 export type ReleasePlatform = "macos" | "windows" | "linux";
 export const RELEASE_PLATFORMS: ReleasePlatform[] = ["macos", "windows", "linux"];

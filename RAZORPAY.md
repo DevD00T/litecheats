@@ -191,7 +191,7 @@ accounts; each user changes it themselves at `/billing`.
   debits the wallet. The new term is measured from the *old* period end, so a late
   sweep never shortens a term the customer paid for.
 - **Not enough balance** — the subscription moves to `halted` rather than going
-  negative. The wallet ledger and balance are written in one SQLite transaction,
+  negative. The wallet ledger and balance are written in one MongoDB transaction,
   so they cannot drift apart.
 - **Manual checkout mode** — nothing is ever auto-debited; the customer pays each
   term from the pricing page.

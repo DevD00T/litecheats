@@ -29,9 +29,9 @@ import {
 	type WalletDocument,
 	type WithId,
 	applyWalletTransaction,
+	creditWalletTopup,
 	ensureWallet,
 	findActiveBillingSubscriptionForUser,
-	findBillingSubscriptionById,
 	findUserById,
 	findWalletTopupById,
 	findWalletTopupByOrderId,
@@ -42,9 +42,9 @@ import {
 	listWalletTransactions,
 	markRenewalWarningSent,
 	markWalletTopupFailed,
-	markWalletTopupPaid,
 	updateBillingSubscriptionFields,
 	updateWalletPreferences,
+	withTransaction,
 } from "./db";
 import { sendRenewalWarningEmail } from "./email";
 import {
@@ -77,8 +77,10 @@ function toWalletSummary(wallet: WalletDocument): WalletSummary {
 
 export async function getWalletForUser(userId: string): Promise<WalletResponse> {
 	await getDb();
-	const wallet = ensureWallet(userId);
-	const transactions = listWalletTransactions(userId, WALLET_TRANSACTION_LIMIT);
+	const [wallet, transactions] = await Promise.all([
+		ensureWallet(userId),
+		listWalletTransactions(userId, WALLET_TRANSACTION_LIMIT),
+	]);
 
 	return {
 		wallet: toWalletSummary(wallet),
@@ -166,8 +168,8 @@ export async function setWalletPreferences(
 	patch: UpdateWalletPreferencesPayload,
 ): Promise<WalletResponse> {
 	await getDb();
-	ensureWallet(userId);
-	updateWalletPreferences(userId, patch);
+	await ensureWallet(userId);
+	await updateWalletPreferences(userId, patch);
 	return getWalletForUser(userId);
 }
 
@@ -185,7 +187,7 @@ export async function createWalletTopup(
 		);
 	}
 
-	ensureWallet(user._id);
+	await ensureWallet(user._id);
 	const topupId = createUuidV7();
 	const now = new Date();
 
@@ -213,7 +215,7 @@ export async function createWalletTopup(
 		throw new BillingError(502, describeRazorpayError(error));
 	}
 
-	insertWalletTopup({
+	await insertWalletTopup({
 		_id: topupId,
 		userId: user._id,
 		amount: payload.amount,
@@ -249,7 +251,7 @@ export async function verifyWalletTopup(
 		throw new BillingError(503, "Payments are not configured on this deployment.");
 	}
 
-	const topup = findWalletTopupById(payload.topupId);
+	const topup = await findWalletTopupById(payload.topupId);
 	if (!topup || topup.userId !== user._id) {
 		throw new BillingError(404, "Top-up not found.");
 	}
@@ -270,7 +272,7 @@ export async function verifyWalletTopup(
 	});
 
 	if (!signatureValid) {
-		markWalletTopupFailed(topup._id);
+		await markWalletTopupFailed(topup._id);
 		throw new BillingError(400, "Payment signature verification failed.");
 	}
 
@@ -303,37 +305,36 @@ export async function verifyWalletTopup(
 		throw new BillingError(400, "Paid amount does not match the requested top-up.");
 	}
 
-	creditTopup(topup._id, user._id, topup.amount, payload.razorpayPaymentId);
+	await creditTopup(topup._id, user._id, topup.amount, payload.razorpayPaymentId);
 	return getWalletForUser(user._id);
 }
 
 /**
- * Credits a top-up exactly once. `markWalletTopupPaid` only succeeds from the
- * `created` state, so whichever of the browser callback and the webhook arrives
- * second is a no-op rather than a double credit.
+ * Credits a top-up exactly once. Marking it paid and crediting the wallet are a
+ * single transaction that only succeeds from the `created` state, so whichever
+ * of the browser callback and the webhook arrives second is a no-op rather than
+ * a double credit, and a failure part-way leaves the top-up retryable.
  */
-export function creditTopup(
+export async function creditTopup(
 	topupId: string,
 	userId: string,
 	amount: number,
 	razorpayPaymentId: string,
-): boolean {
-	if (!markWalletTopupPaid(topupId, razorpayPaymentId)) return false;
-
-	const transaction = applyWalletTransaction({
+): Promise<boolean> {
+	const transaction = await creditWalletTopup({
+		topupId,
 		userId,
-		type: "credit",
 		amount,
-		reason: "Wallet top-up",
-		referenceId: razorpayPaymentId,
+		razorpayPaymentId,
 		transactionId: createUuidV7(),
 	});
+	if (!transaction) return false;
 
 	void announceTopupToAdmins({
 		userId,
 		amount,
 		razorpayPaymentId,
-		balanceAfter: transaction?.balanceAfter ?? amount,
+		balanceAfter: transaction.balanceAfter,
 	});
 
 	return true;
@@ -346,7 +347,7 @@ export async function creditTopupFromWebhook(
 	amount: number,
 ): Promise<boolean> {
 	await getDb();
-	const topup = findWalletTopupByOrderId(orderId);
+	const topup = await findWalletTopupByOrderId(orderId);
 	if (!topup) return false;
 	if (amount !== topup.amount) {
 		console.warn(
@@ -372,14 +373,14 @@ function addMonths(from: Date, months: number): Date {
  */
 export async function getRenewalNoticeForUser(userId: string): Promise<RenewalNotice | null> {
 	await getDb();
-	const subscription = findActiveBillingSubscriptionForUser(userId, new Date());
+	const subscription = await findActiveBillingSubscriptionForUser(userId, new Date());
 	if (!subscription?.currentPeriodEnd || subscription.cancelAtPeriodEnd) return null;
 
 	const renewsAt = subscription.currentPeriodEnd.toISOString();
 	const daysRemaining = daysUntil(renewsAt);
 	if (daysRemaining > RENEWAL_WARNING_DAYS) return null;
 
-	const wallet = ensureWallet(userId);
+	const wallet = await ensureWallet(userId);
 	const amountDue = subscription.amount;
 	const shortfall = Math.max(0, amountDue - wallet.balance);
 
@@ -414,7 +415,7 @@ export async function runRenewalSweep(now: Date = new Date()): Promise<RenewalSw
 	await getDb();
 	const result: RenewalSweepResult = { renewed: 0, halted: 0, warned: 0 };
 
-	for (const subscription of listSubscriptionsDueForRenewal(now)) {
+	for (const subscription of await listSubscriptionsDueForRenewal(now)) {
 		if (await renewSubscriptionFromWallet(subscription, now)) {
 			result.renewed += 1;
 		} else {
@@ -423,7 +424,7 @@ export async function runRenewalSweep(now: Date = new Date()): Promise<RenewalSw
 	}
 
 	const windowEnd = new Date(now.getTime() + RENEWAL_WARNING_DAYS * 24 * 60 * 60 * 1000);
-	for (const subscription of listSubscriptionsNeedingRenewalWarning(now, windowEnd)) {
+	for (const subscription of await listSubscriptionsNeedingRenewalWarning(now, windowEnd)) {
 		if (await sendRenewalWarning(subscription)) {
 			result.warned += 1;
 		}
@@ -436,36 +437,57 @@ async function renewSubscriptionFromWallet(
 	subscription: WithId<BillingSubscriptionDocument>,
 	now: Date,
 ): Promise<boolean> {
-	const wallet = ensureWallet(subscription.userId);
+	const wallet = await ensureWallet(subscription.userId);
 
 	if (!wallet.autoRenew || wallet.paymentMode !== "wallet") {
-		haltSubscription(subscription, "auto-renew is off or the payment mode is manual checkout");
-		return false;
-	}
-
-	const debited = applyWalletTransaction({
-		userId: subscription.userId,
-		type: "debit",
-		amount: subscription.amount,
-		reason: `${subscription.planName} renewal (${subscription.quantity} × ${subscription.cycle})`,
-		referenceId: subscription._id,
-		transactionId: createUuidV7(),
-	});
-
-	if (!debited) {
-		haltSubscription(subscription, "wallet balance did not cover the renewal");
+		await haltSubscription(
+			subscription,
+			"auto-renew is off or the payment mode is manual checkout",
+		);
 		return false;
 	}
 
 	// Extend from the old period end, not from now, so a late sweep does not
 	// silently shorten the term the customer paid for.
 	const periodStart = subscription.currentPeriodEnd ?? now;
-	updateBillingSubscriptionFields(subscription._id, {
-		status: "active",
-		currentPeriodStart: periodStart,
-		currentPeriodEnd: addMonths(periodStart, BILLING_CYCLE_MONTHS[subscription.cycle]),
-		updatedAt: now,
+	const periodEnd = addMonths(periodStart, BILLING_CYCLE_MONTHS[subscription.cycle]);
+
+	// The debit and the extension it pays for commit together. Were they separate
+	// writes, a failure after the debit would leave the term looking unpaid, and
+	// the next sweep would charge the customer a second time. The id is created
+	// outside the callback so a retried transaction reuses it.
+	const transactionId = createUuidV7();
+	const debited = await withTransaction(async (session) => {
+		const entry = await applyWalletTransaction(
+			{
+				userId: subscription.userId,
+				type: "debit",
+				amount: subscription.amount,
+				reason: `${subscription.planName} renewal (${subscription.quantity} × ${subscription.cycle})`,
+				referenceId: subscription._id,
+				transactionId,
+			},
+			session,
+		);
+		if (!entry) return null;
+
+		await updateBillingSubscriptionFields(
+			subscription._id,
+			{
+				status: "active",
+				currentPeriodStart: periodStart,
+				currentPeriodEnd: periodEnd,
+				updatedAt: now,
+			},
+			session,
+		);
+		return entry;
 	});
+
+	if (!debited) {
+		await haltSubscription(subscription, "wallet balance did not cover the renewal");
+		return false;
+	}
 
 	console.log(
 		`[wallet] Renewed ${subscription.planName} for user ${subscription.userId} from wallet (${formatInr(subscription.amount)}).`,
@@ -478,14 +500,17 @@ async function renewSubscriptionFromWallet(
 		cycle: subscription.cycle,
 		amount: subscription.amount,
 		balanceAfter: debited.balanceAfter,
-		periodEnd: findBillingSubscriptionById(subscription._id)?.currentPeriodEnd ?? null,
+		periodEnd,
 	});
 
 	return true;
 }
 
-function haltSubscription(subscription: WithId<BillingSubscriptionDocument>, reason: string): void {
-	updateBillingSubscriptionFields(subscription._id, {
+async function haltSubscription(
+	subscription: WithId<BillingSubscriptionDocument>,
+	reason: string,
+): Promise<void> {
+	await updateBillingSubscriptionFields(subscription._id, {
 		status: "halted",
 		updatedAt: new Date(),
 	});
@@ -497,7 +522,7 @@ function haltSubscription(subscription: WithId<BillingSubscriptionDocument>, rea
 		userId: subscription.userId,
 		planName: subscription.planName,
 		amount: subscription.amount,
-		balance: ensureWallet(subscription.userId).balance,
+		balance: (await ensureWallet(subscription.userId)).balance,
 		reason,
 	});
 }
@@ -507,10 +532,10 @@ async function sendRenewalWarning(
 ): Promise<boolean> {
 	if (!subscription.currentPeriodEnd) return false;
 
-	const user = findUserById(subscription.userId);
+	const user = await findUserById(subscription.userId);
 	if (!user) return false;
 
-	const wallet = ensureWallet(subscription.userId);
+	const wallet = await ensureWallet(subscription.userId);
 	const shortfall = Math.max(0, subscription.amount - wallet.balance);
 
 	await sendRenewalWarningEmail({
@@ -541,7 +566,7 @@ async function sendRenewalWarning(
 		});
 	}
 
-	markRenewalWarningSent(subscription._id, subscription.currentPeriodEnd);
+	await markRenewalWarningSent(subscription._id, subscription.currentPeriodEnd);
 	return true;
 }
 
@@ -569,17 +594,17 @@ export function stopRenewalSweep(): void {
 	sweepTimer = null;
 }
 
-export function deductWalletForUser(params: {
+export async function deductWalletForUser(params: {
 	userId: string;
 	amount: number;
 	reason: string;
 	referenceId: string | null;
-}): boolean {
+}): Promise<boolean> {
 	return (
-		applyWalletTransaction({
+		(await applyWalletTransaction({
 			...params,
 			type: "debit",
 			transactionId: createUuidV7(),
-		}) !== null
+		})) !== null
 	);
 }

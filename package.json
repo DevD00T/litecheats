@@ -24,7 +24,10 @@
     "appbun:hmr:create": "APPBUN_URL=${APPBUN_URL:-http://localhost:8080} bun run appbun:create",
     "appbun:hmr:run": "APPBUN_URL=${APPBUN_URL:-http://localhost:8080} APPBUN_OUT_DIR=${APPBUN_OUT_DIR:-./litecheats} bun run appbun:hmr:create && bun scripts/run-appbun-hmr.ts",
     "lint": "biome check src shared",
-    "lint:fix": "biome check --write src shared"
+    "lint:fix": "biome check --write src shared",
+    "test": "bun test src",
+    "db:setup": "bun scripts/db-setup.ts",
+    "db:migrate-sqlite": "bun scripts/migrate-sqlite-to-mongo.ts"
   },
   "dependencies": {
     "@elysiajs/static": "^1.4.10",
@@ -33,6 +36,7 @@
     "framer-motion": "^12.38.0",
     "gramio": "^0.9.0",
     "gsap": "^3.15.0",
+    "mongodb": "^6.21.0",
     "motion": "^12.38.0",
     "radix-ui": "^1.4.3",
     "razorpay": "^2.9.8",

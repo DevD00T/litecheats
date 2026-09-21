@@ -390,7 +390,7 @@ export async function createCheckout(
 		updatedAt: now,
 	};
 
-	insertBillingSubscription(record);
+	await insertBillingSubscription(record);
 
 	return {
 		mode: record.mode,
@@ -431,7 +431,7 @@ async function recordPayment(params: {
 	method: string | null;
 }): Promise<void> {
 	const now = new Date();
-	insertBillingPayment({
+	await insertBillingPayment({
 		_id: createUuidV7(),
 		userId: params.userId,
 		subscriptionId: params.subscriptionId,
@@ -460,7 +460,7 @@ export async function verifyCheckout(
 	await getDb();
 	const client = requireRazorpayClient();
 
-	const record = findBillingSubscriptionById(payload.subscriptionRecordId);
+	const record = await findBillingSubscriptionById(payload.subscriptionRecordId);
 	if (!record || record.userId !== user._id) {
 		throw new BillingError(404, "Checkout attempt not found.");
 	}
@@ -484,7 +484,7 @@ export async function verifyCheckout(
 	});
 
 	if (!signatureValid) {
-		updateBillingSubscriptionFields(record._id, { status: "failed", updatedAt: new Date() });
+		await updateBillingSubscriptionFields(record._id, { status: "failed", updatedAt: new Date() });
 		throw new BillingError(400, "Payment signature verification failed.");
 	}
 
@@ -523,7 +523,7 @@ export async function verifyCheckout(
 			status: String(payment.status),
 			method: typeof payment.method === "string" ? payment.method : null,
 		});
-		updateBillingSubscriptionFields(record._id, { status: "pending", updatedAt: new Date() });
+		await updateBillingSubscriptionFields(record._id, { status: "pending", updatedAt: new Date() });
 		throw new BillingError(402, `Payment is ${payment.status}, not captured. Please try again.`);
 	}
 
@@ -537,7 +537,7 @@ export async function verifyCheckout(
 	const now = new Date();
 	const period = periodForRecord(record, now);
 
-	updateBillingSubscriptionFields(record._id, {
+	await updateBillingSubscriptionFields(record._id, {
 		status: "active",
 		razorpayPaymentId: payload.razorpayPaymentId,
 		currentPeriodStart: period.currentPeriodStart,
@@ -557,7 +557,7 @@ export async function verifyCheckout(
 		method: typeof payment.method === "string" ? payment.method : null,
 	});
 
-	const updated = findBillingSubscriptionById(record._id);
+	const updated = await findBillingSubscriptionById(record._id);
 	if (!updated) {
 		throw new BillingError(500, "Subscription record disappeared after activation.");
 	}
@@ -571,14 +571,14 @@ export async function verifyCheckout(
 
 export async function getSubscriptionForUser(userId: string): Promise<BillingSubscription | null> {
 	await getDb();
-	const active = findActiveBillingSubscriptionForUser(userId, new Date());
-	const record = active ?? findLatestBillingSubscriptionForUser(userId);
+	const active = await findActiveBillingSubscriptionForUser(userId, new Date());
+	const record = active ?? (await findLatestBillingSubscriptionForUser(userId));
 	return record ? toBillingSubscription(record) : null;
 }
 
 export async function getPaymentHistoryForUser(userId: string): Promise<BillingHistoryResponse> {
 	await getDb();
-	const payments = listBillingPaymentsForUser(userId, PAYMENT_HISTORY_LIMIT);
+	const payments = await listBillingPaymentsForUser(userId, PAYMENT_HISTORY_LIMIT);
 
 	return {
 		payments: payments.map((payment) => ({
@@ -600,7 +600,7 @@ export async function cancelSubscription(
 	payload: CancelSubscriptionPayload,
 ): Promise<BillingSubscription> {
 	await getDb();
-	const record = findBillingSubscriptionById(payload.subscriptionId);
+	const record = await findBillingSubscriptionById(payload.subscriptionId);
 	if (!record || record.userId !== userId) {
 		throw new BillingError(404, "Subscription not found.");
 	}
@@ -622,7 +622,7 @@ export async function cancelSubscription(
 	}
 
 	const now = new Date();
-	updateBillingSubscriptionFields(record._id, {
+	await updateBillingSubscriptionFields(record._id, {
 		// A prepaid order-mode term is honoured to its end date; only an immediate
 		// cancellation revokes access right away.
 		status: atPeriodEnd ? record.status : "cancelled",
@@ -631,7 +631,7 @@ export async function cancelSubscription(
 		updatedAt: now,
 	});
 
-	const updated = findBillingSubscriptionById(record._id);
+	const updated = await findBillingSubscriptionById(record._id);
 	if (!updated) {
 		throw new BillingError(500, "Subscription record disappeared after cancellation.");
 	}
@@ -664,21 +664,21 @@ function readNumber(entity: Record<string, unknown> | undefined, key: string): n
  * most reliable link because this app sets them at creation time; the order and
  * subscription ids are the fallback for events that carry no notes.
  */
-function resolveRecordFromEntity(
+async function resolveRecordFromEntity(
 	entity: Record<string, unknown> | undefined,
-): WithId<BillingSubscriptionDocument> | null {
+): Promise<WithId<BillingSubscriptionDocument> | null> {
 	const notes = entity?.notes;
 	if (notes && typeof notes === "object") {
 		const recordId = (notes as Record<string, unknown>).litecheatsRecordId;
 		if (typeof recordId === "string" && recordId) {
-			const byNotes = findBillingSubscriptionById(recordId);
+			const byNotes = await findBillingSubscriptionById(recordId);
 			if (byNotes) return byNotes;
 		}
 	}
 
 	const orderId = readString(entity, "order_id") ?? readString(entity, "id");
 	if (orderId?.startsWith("order_")) {
-		const byOrder = findBillingSubscriptionByOrderId(orderId);
+		const byOrder = await findBillingSubscriptionByOrderId(orderId);
 		if (byOrder) return byOrder;
 	}
 
@@ -686,26 +686,26 @@ function resolveRecordFromEntity(
 		readString(entity, "subscription_id") ??
 		(readString(entity, "id")?.startsWith("sub_") ? readString(entity, "id") : null);
 	if (subscriptionId) {
-		const bySubscription = findBillingSubscriptionByRazorpayId(subscriptionId);
+		const bySubscription = await findBillingSubscriptionByRazorpayId(subscriptionId);
 		if (bySubscription) return bySubscription;
 	}
 
 	return null;
 }
 
-function activateRecord(
+async function activateRecord(
 	record: WithId<BillingSubscriptionDocument>,
 	options: {
 		paymentId?: string | null;
 		periodStart?: Date | null;
 		periodEnd?: Date | null;
 	} = {},
-): void {
+): Promise<void> {
 	const now = new Date();
 	const start = options.periodStart ?? record.currentPeriodStart ?? now;
 	const end = options.periodEnd ?? addMonths(start, BILLING_CYCLE_MONTHS[record.cycle]);
 
-	updateBillingSubscriptionFields(record._id, {
+	await updateBillingSubscriptionFields(record._id, {
 		status: "active",
 		razorpayPaymentId: options.paymentId ?? record.razorpayPaymentId,
 		currentPeriodStart: start,
@@ -754,7 +754,7 @@ async function applyPaymentEvent(
 		return;
 	}
 
-	const record = resolveRecordFromEntity(entity);
+	const record = await resolveRecordFromEntity(entity);
 	const paymentId = readString(entity, "id");
 	const orderId = readString(entity, "order_id");
 	const amount = readNumber(entity, "amount") ?? record?.amount ?? 0;
@@ -782,20 +782,20 @@ async function applyPaymentEvent(
 	}
 
 	if (event === "payment.captured") {
-		activateRecord(record, { paymentId });
+		await activateRecord(record, { paymentId });
 		void announceOrderToAdmins(record._id);
 		return;
 	}
 
 	if (event === "payment.failed" && record.status !== "active") {
-		updateBillingSubscriptionFields(record._id, { status: "failed", updatedAt: new Date() });
+		await updateBillingSubscriptionFields(record._id, { status: "failed", updatedAt: new Date() });
 	}
 }
 
 async function applyOrderEvent(entity: Record<string, unknown> | undefined): Promise<void> {
-	const record = resolveRecordFromEntity(entity);
+	const record = await resolveRecordFromEntity(entity);
 	if (!record) return;
-	activateRecord(record);
+	await activateRecord(record);
 	void announceOrderToAdmins(record._id);
 }
 
@@ -803,7 +803,7 @@ async function applySubscriptionEvent(
 	event: string,
 	entity: Record<string, unknown> | undefined,
 ): Promise<void> {
-	const record = resolveRecordFromEntity(entity);
+	const record = await resolveRecordFromEntity(entity);
 	if (!record) {
 		console.warn(`[billing] Webhook ${event} did not match a local subscription record.`);
 		return;
@@ -817,11 +817,11 @@ async function applySubscriptionEvent(
 	const now = new Date();
 
 	if (status === "active") {
-		activateRecord(record, { periodStart, periodEnd });
+		await activateRecord(record, { periodStart, periodEnd });
 		return;
 	}
 
-	updateBillingSubscriptionFields(record._id, {
+	await updateBillingSubscriptionFields(record._id, {
 		status,
 		currentPeriodStart: periodStart ?? record.currentPeriodStart,
 		currentPeriodEnd: periodEnd ?? record.currentPeriodEnd,
@@ -834,7 +834,7 @@ async function applyRefundEvent(entity: Record<string, unknown> | undefined): Pr
 	const paymentId = readString(entity, "payment_id");
 	if (!paymentId) return;
 
-	const record = resolveRecordFromEntity(entity);
+	const record = await resolveRecordFromEntity(entity);
 	if (!record) return;
 
 	await recordPayment({
@@ -849,7 +849,7 @@ async function applyRefundEvent(entity: Record<string, unknown> | undefined): Pr
 		method: null,
 	});
 
-	updateBillingSubscriptionFields(record._id, {
+	await updateBillingSubscriptionFields(record._id, {
 		status: "cancelled",
 		currentPeriodEnd: new Date(),
 		updatedAt: new Date(),
@@ -897,7 +897,7 @@ export async function handleRazorpayWebhook(
 	// Razorpay retries until it receives a 2xx and can redeliver after success,
 	// so every event id is processed at most once.
 	const claimKey = eventId ?? `${event}:${Bun.hash(rawBody).toString(16)}`;
-	if (!claimBillingWebhookEvent(claimKey, event)) {
+	if (!(await claimBillingWebhookEvent(claimKey, event))) {
 		return { event, handled: false, duplicate: true };
 	}
 
@@ -930,8 +930,8 @@ export async function handleRazorpayWebhook(
 /** Exposed for the admin surface: resolves a user's plan without an HTTP round trip. */
 export async function getEntitlementPlanId(userId: string): Promise<BillingPlanId> {
 	await getDb();
-	if (!findUserById(userId)) return "lab";
-	const active = findActiveBillingSubscriptionForUser(userId, new Date());
+	if (!(await findUserById(userId))) return "lab";
+	const active = await findActiveBillingSubscriptionForUser(userId, new Date());
 	return active?.planId ?? "lab";
 }
 
@@ -940,14 +940,14 @@ const ADMIN_ORDER_LIST_LIMIT = 500;
 
 export async function getOrdersForUser(userId: string): Promise<BillingOrdersResponse> {
 	await getDb();
-	const records = listBillingSubscriptionsForUser(userId, ORDER_LIST_LIMIT);
+	const records = await listBillingSubscriptionsForUser(userId, ORDER_LIST_LIMIT);
 	return { orders: records.map(toBillingSubscription) };
 }
 
 export async function getAdminOrders(): Promise<AdminBillingOrdersResponse> {
 	await getDb();
-	const rows = listAllBillingSubscriptionsWithOwner(ADMIN_ORDER_LIST_LIMIT);
-	const totals = getBillingTotals(new Date());
+	const rows = await listAllBillingSubscriptionsWithOwner(ADMIN_ORDER_LIST_LIMIT);
+	const totals = await getBillingTotals(new Date());
 
 	return {
 		orders: rows.map((row) => ({
@@ -1039,12 +1039,12 @@ export async function adminUpdateOrder(
 	patch: AdminUpdateOrderPayload,
 ): Promise<AdminBillingOrdersResponse> {
 	await getDb();
-	const record = findBillingSubscriptionById(orderId);
+	const record = await findBillingSubscriptionById(orderId);
 	if (!record) {
 		throw new BillingError(404, "Order not found.");
 	}
 
-	updateBillingSubscriptionFields(record._id, {
+	await updateBillingSubscriptionFields(record._id, {
 		status: patch.status,
 		quantity: patch.quantity,
 		notes: patch.notes,
@@ -1072,12 +1072,12 @@ function escapeTelegramHtml(value: string): string {
  */
 export async function announceOrderToAdmins(subscriptionId: string): Promise<void> {
 	await getDb();
-	const record = findBillingSubscriptionById(subscriptionId);
+	const record = await findBillingSubscriptionById(subscriptionId);
 	if (!record) return;
 
-	if (!claimOrderAdminNotification(record._id)) return;
+	if (!(await claimOrderAdminNotification(record._id))) return;
 
-	const user = findUserById(record.userId);
+	const user = await findUserById(record.userId);
 	const lines = [
 		"<b>New order paid</b>",
 		"",
@@ -1114,7 +1114,7 @@ export async function announceTopupToAdmins(params: {
 	balanceAfter: number;
 }): Promise<void> {
 	await getDb();
-	const user = findUserById(params.userId);
+	const user = await findUserById(params.userId);
 	const lines = [
 		"<b>Wallet topped up</b>",
 		"",
@@ -1142,8 +1142,8 @@ interface AdminRenewalAlertParams {
 	periodEnd: Date | null;
 }
 
-function describeCustomer(userId: string): string {
-	const user = findUserById(userId);
+async function describeCustomer(userId: string): Promise<string> {
+	const user = await findUserById(userId);
 	return `${escapeTelegramHtml(user?.fullName ?? "Unknown")} &lt;${escapeTelegramHtml(
 		user?.email ?? "unknown",
 	)}&gt;`;
@@ -1167,7 +1167,7 @@ export async function announceRenewalToAdmins(params: AdminRenewalAlertParams): 
 		`<b>Plan:</b> ${escapeTelegramHtml(params.planName)} × ${params.quantity} (${escapeTelegramHtml(params.cycle)})`,
 		`<b>Charged:</b> ${escapeTelegramHtml(formatInr(params.amount))}`,
 		`<b>Wallet left:</b> ${escapeTelegramHtml(formatInr(params.balanceAfter))}`,
-		`<b>Customer:</b> ${describeCustomer(params.userId)}`,
+		`<b>Customer:</b> ${await describeCustomer(params.userId)}`,
 		...(params.periodEnd
 			? [`<b>Next renewal:</b> ${escapeTelegramHtml(params.periodEnd.toDateString())}`]
 			: []),
@@ -1190,7 +1190,7 @@ export async function announceRenewalFailedToAdmins(params: {
 		`<b>Needed:</b> ${escapeTelegramHtml(formatInr(params.amount))}`,
 		`<b>Wallet balance:</b> ${escapeTelegramHtml(formatInr(params.balance))}`,
 		`<b>Reason:</b> ${escapeTelegramHtml(params.reason)}`,
-		`<b>Customer:</b> ${describeCustomer(params.userId)}`,
+		`<b>Customer:</b> ${await describeCustomer(params.userId)}`,
 	]);
 }
 
@@ -1223,7 +1223,7 @@ export async function announceLowBalanceToAdmins(params: {
 		`<b>Needed:</b> ${escapeTelegramHtml(formatInr(params.amount))}`,
 		`<b>Wallet balance:</b> ${escapeTelegramHtml(formatInr(params.balance))}`,
 		`<b>Status:</b> ${escapeTelegramHtml(cause)}`,
-		`<b>Customer:</b> ${describeCustomer(params.userId)}`,
+		`<b>Customer:</b> ${await describeCustomer(params.userId)}`,
 	]);
 }
 
@@ -1290,7 +1290,7 @@ export async function adminCreateSubscription(
 ): Promise<AdminBillingOrdersResponse> {
 	await getDb();
 
-	const user = findUserById(payload.userId);
+	const user = await findUserById(payload.userId);
 	if (!user) throw new BillingError(404, "That account no longer exists.");
 
 	const plan = findBillingPlan(payload.planId);
@@ -1329,7 +1329,7 @@ export async function adminCreateSubscription(
 		updatedAt: now,
 	};
 
-	insertBillingSubscription(record);
+	await insertBillingSubscription(record);
 	console.log(
 		`[billing] ${grantedBy} granted ${plan.name} (${record.privateId}) to ${user.email}.`,
 	);
@@ -1343,10 +1343,10 @@ export async function adminDeleteSubscription(
 	deletedBy: string,
 ): Promise<AdminBillingOrdersResponse> {
 	await getDb();
-	const record = findBillingSubscriptionById(subscriptionId);
+	const record = await findBillingSubscriptionById(subscriptionId);
 	if (!record) throw new BillingError(404, "Subscription not found.");
 
-	if (!deleteBillingSubscriptionById(subscriptionId)) {
+	if (!(await deleteBillingSubscriptionById(subscriptionId))) {
 		throw new BillingError(500, "Subscription could not be deleted.");
 	}
 

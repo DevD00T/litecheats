@@ -985,13 +985,13 @@ function toReleaseSummary(
 
 async function buildReleaseFeed(limit = 20): Promise<ReleaseFeedResponse> {
 	await getDb();
-	const releaseList = listReleasesSortedByPublishedDesc(limit);
+	const releaseList = await listReleasesSortedByPublishedDesc(limit);
 	if (!releaseList.length) {
 		return { latest: null, releases: [] };
 	}
 
 	const releaseIds = releaseList.map((item) => item._id);
-	const artifactList = listArtifactMetaByReleaseIds(releaseIds);
+	const artifactList = await listArtifactMetaByReleaseIds(releaseIds);
 
 	const artifactMap = new Map<string, WithId<ReleaseArtifactDocument>[]>();
 	for (const artifact of artifactList) {
@@ -1047,17 +1047,17 @@ async function computeFileSha256(file: File): Promise<string> {
 
 async function setLatestReleaseId(releaseId: string, now: Date): Promise<void> {
 	await getDb();
-	unsetLatestExcept(releaseId, now);
-	setReleaseLatest(releaseId, true, now);
+	await unsetLatestExcept(releaseId, now);
+	await setReleaseLatest(releaseId, true, now);
 }
 
 async function ensureAtLeastOneLatestRelease(now: Date): Promise<void> {
 	await getDb();
-	if (findAnyLatestRelease()) return;
+	if (await findAnyLatestRelease()) return;
 
-	const fallback = findMostRecentReleaseByPublishedDesc();
+	const fallback = await findMostRecentReleaseByPublishedDesc();
 	if (!fallback) return;
-	setReleaseLatest(fallback._id, true, now);
+	await setReleaseLatest(fallback._id, true, now);
 }
 
 async function createReleaseByAdmin(payload: AdminCreateReleasePayload): Promise<void> {
@@ -1068,7 +1068,7 @@ async function createReleaseByAdmin(payload: AdminCreateReleasePayload): Promise
 	const shouldBeLatest = payload.isLatest ?? true;
 
 	try {
-		insertRelease({
+		await insertRelease({
 			_id: releaseId,
 			version: payload.version,
 			notes: payload.notes ?? "",
@@ -1098,7 +1098,7 @@ async function updateReleaseByAdmin(
 	await getDb();
 	const now = new Date();
 
-	const current = findReleaseById(releaseId);
+	const current = await findReleaseById(releaseId);
 	if (!current) {
 		throw new HttpError(404, "Release not found.");
 	}
@@ -1109,7 +1109,7 @@ async function updateReleaseByAdmin(
 	if (typeof payload.publishedAt === "string") patch.publishedAt = new Date(payload.publishedAt);
 
 	try {
-		updateReleaseFields(releaseId, patch);
+		await updateReleaseFields(releaseId, patch);
 	} catch (error) {
 		if (isUniqueConstraintError(error)) {
 			throw new HttpError(409, "A release with this version already exists.");
@@ -1118,13 +1118,13 @@ async function updateReleaseByAdmin(
 	}
 
 	if (typeof payload.version === "string" && payload.version !== current.version) {
-		updateArtifactVersionForRelease(releaseId, payload.version);
+		await updateArtifactVersionForRelease(releaseId, payload.version);
 	}
 
 	if (payload.isLatest === true) {
 		await setLatestReleaseId(releaseId, now);
 	} else if (payload.isLatest === false) {
-		setReleaseLatest(releaseId, false, now);
+		await setReleaseLatest(releaseId, false, now);
 		await ensureAtLeastOneLatestRelease(now);
 	}
 }
@@ -1133,13 +1133,13 @@ async function deleteReleaseByAdmin(releaseId: string): Promise<number> {
 	await getDb();
 	const now = new Date();
 
-	const release = findReleaseById(releaseId);
+	const release = await findReleaseById(releaseId);
 	if (!release) {
 		throw new HttpError(404, "Release not found.");
 	}
 
-	const deletedArtifacts = deleteArtifactsByReleaseId(releaseId);
-	deleteReleaseById(releaseId);
+	const deletedArtifacts = await deleteArtifactsByReleaseId(releaseId);
+	await deleteReleaseById(releaseId);
 	await ensureAtLeastOneLatestRelease(now);
 
 	return deletedArtifacts;
@@ -1159,7 +1159,7 @@ async function uploadReleaseArtifactByAdmin(releaseId: string, formData: FormDat
 	}
 
 	await getDb();
-	const release = findReleaseById(releaseId);
+	const release = await findReleaseById(releaseId);
 	if (!release) {
 		throw new HttpError(404, "Release not found.");
 	}
@@ -1173,15 +1173,15 @@ async function uploadReleaseArtifactByAdmin(releaseId: string, formData: FormDat
 	);
 	const now = new Date();
 
-	const existing = findArtifactByLookup(releaseId, platform, format, target);
+	const existing = await findArtifactByLookup(releaseId, platform, format, target);
 	if (existing) {
-		deleteArtifactById(existing._id);
+		await deleteArtifactById(existing._id);
 	}
 
 	const sha256 = await computeFileSha256(fileEntry);
 	const fileBuffer = new Uint8Array(await fileEntry.arrayBuffer());
 
-	insertArtifact(
+	await insertArtifact(
 		{
 			_id: crypto.randomUUID(),
 			releaseId,
@@ -1204,7 +1204,7 @@ async function updateReleaseArtifactByAdmin(
 	payload: AdminUpdateArtifactPayload,
 ): Promise<void> {
 	await getDb();
-	const existing = findArtifactMetaById(artifactId);
+	const existing = await findArtifactMetaById(artifactId);
 	if (!existing) {
 		throw new HttpError(404, "Release artifact not found.");
 	}
@@ -1213,7 +1213,7 @@ async function updateReleaseArtifactByAdmin(
 	const nextFormat = payload.format ?? existing.format;
 	const nextTarget = payload.target ?? existing.target;
 
-	const conflicting = findConflictingArtifact(
+	const conflicting = await findConflictingArtifact(
 		artifactId,
 		existing.releaseId,
 		nextPlatform,
@@ -1241,24 +1241,24 @@ async function updateReleaseArtifactByAdmin(
 		patch.mimeType = resolveReleaseMimeType(patch.format);
 	}
 
-	updateArtifactFields(artifactId, patch);
+	await updateArtifactFields(artifactId, patch);
 }
 
 async function deleteReleaseArtifactByAdmin(artifactId: string): Promise<void> {
 	await getDb();
-	const existing = findArtifactMetaById(artifactId);
+	const existing = await findArtifactMetaById(artifactId);
 	if (!existing) {
 		throw new HttpError(404, "Release artifact not found.");
 	}
 
-	deleteArtifactById(artifactId);
+	await deleteArtifactById(artifactId);
 }
 
 async function getReleaseArtifactById(
 	artifactId: string,
 ): Promise<WithId<ReleaseArtifactDocument> | null> {
 	await getDb();
-	return findArtifactMetaById(artifactId);
+	return await findArtifactMetaById(artifactId);
 }
 
 async function buildDownloadResponse(request: Request, artifactId: string): Promise<Response> {
@@ -1267,7 +1267,7 @@ async function buildDownloadResponse(request: Request, artifactId: string): Prom
 		throw new HttpError(404, "Release artifact not found.");
 	}
 
-	const blob = findArtifactBlobById(artifactId);
+	const blob = await findArtifactBlobById(artifactId);
 	if (!blob) {
 		throw new HttpError(404, "Artifact file content not found.");
 	}
@@ -1281,7 +1281,7 @@ async function buildDownloadResponse(request: Request, artifactId: string): Prom
 	headers.set("Content-Length", String(artifact.sizeBytes));
 	headers.set("Cache-Control", "public, max-age=300, immutable");
 
-	return new Response(Buffer.from(blob), {
+	return new Response(blob, {
 		status: 200,
 		headers,
 	});
@@ -1308,7 +1308,7 @@ async function createUser(payload: SignupPayload): Promise<WithId<UserDocument>>
 	};
 
 	try {
-		insertUser(user);
+		await insertUser(user);
 	} catch (error) {
 		if (isUniqueConstraintError(error)) {
 			throw new HttpError(409, "An account with this email already exists.");
@@ -1328,7 +1328,7 @@ async function issueVerificationCode(user: WithId<UserDocument>): Promise<string
 	await getDb();
 	const code = createVerificationCode();
 	const codeHash = await Bun.password.hash(code);
-	upsertEmailVerificationCode({
+	await upsertEmailVerificationCode({
 		userId: user._id,
 		codeHash,
 		expiresAt: new Date(Date.now() + EMAIL_VERIFICATION_CODE_TTL_MS),
@@ -1353,7 +1353,7 @@ async function sendVerificationEmailToUser(user: WithId<UserDocument>): Promise<
 
 async function findUserByEmail(email: string): Promise<WithId<UserDocument> | null> {
 	await getDb();
-	return findUserByEmailLower(normalizeEmail(email));
+	return await findUserByEmailLower(normalizeEmail(email));
 }
 
 function toAuthSession(session: WithId<SessionDocument>, currentSessionId: string): AuthSession {
@@ -1380,9 +1380,9 @@ async function createSession(
 ): Promise<WithId<SessionDocument>> {
 	await getDb();
 	const now = new Date();
-	deleteExpiredSessionsForUser(userId, now);
+	await deleteExpiredSessionsForUser(userId, now);
 
-	const activeDeviceSessionCount = countActiveSessionsForDevice(userId, meta.deviceKey, now);
+	const activeDeviceSessionCount = await countActiveSessionsForDevice(userId, meta.deviceKey, now);
 	if (activeDeviceSessionCount >= AUTH_MAX_SESSIONS_PER_DEVICE) {
 		throw new HttpError(
 			409,
@@ -1390,7 +1390,7 @@ async function createSession(
 		);
 	}
 
-	const activeSessionCount = countActiveSessionsForUser(userId, now);
+	const activeSessionCount = await countActiveSessionsForUser(userId, now);
 	if (activeSessionCount >= AUTH_MAX_ACTIVE_SESSIONS_PER_USER) {
 		throw new HttpError(
 			429,
@@ -1409,23 +1409,23 @@ async function createSession(
 		expiresAt: new Date(now.getTime() + ONE_DAY_MS),
 	};
 
-	insertSession(session);
+	await insertSession(session);
 	return session;
 }
 
 async function deleteSession(sessionId: string): Promise<void> {
 	await getDb();
-	deleteSessionById(sessionId);
+	await deleteSessionById(sessionId);
 }
 
 async function deleteSessionForUser(userId: string, sessionId: string): Promise<boolean> {
 	await getDb();
-	return deleteSessionByIdForUser(sessionId, userId);
+	return await deleteSessionByIdForUser(sessionId, userId);
 }
 
 async function deleteAllSessionsForUser(userId: string): Promise<number> {
 	await getDb();
-	return dbDeleteAllSessionsForUserId(userId);
+	return await dbDeleteAllSessionsForUserId(userId);
 }
 
 async function listActiveSessionsForUser(
@@ -1434,9 +1434,9 @@ async function listActiveSessionsForUser(
 ): Promise<SessionListResponse> {
 	await getDb();
 	const now = new Date();
-	deleteExpiredSessionsForUser(userId, now);
+	await deleteExpiredSessionsForUser(userId, now);
 
-	const activeSessions = dbListActiveSessionsForUser(userId, now);
+	const activeSessions = await dbListActiveSessionsForUser(userId, now);
 
 	return {
 		sessions: activeSessions.map((session) => toAuthSession(session, currentSessionId)),
@@ -1451,22 +1451,22 @@ async function resolveSessionUser(request: Request): Promise<ResolvedSessionCont
 	const now = Date.now();
 	const requestMeta = getSessionRequestMeta(request);
 
-	const session = findSessionById(sessionId);
+	const session = await findSessionById(sessionId);
 	if (!session) return null;
 
 	if (session.expiresAt.getTime() <= now) {
-		deleteSessionById(session._id);
+		await deleteSessionById(session._id);
 		return null;
 	}
 
 	if (session.deviceKey !== requestMeta.deviceKey) {
-		deleteSessionById(session._id);
+		await deleteSessionById(session._id);
 		return null;
 	}
 
-	const user = findUserById(session.userId);
+	const user = await findUserById(session.userId);
 	if (!user) {
-		deleteSessionById(session._id);
+		await deleteSessionById(session._id);
 		return null;
 	}
 
@@ -1477,7 +1477,7 @@ async function resolveSessionUser(request: Request): Promise<ResolvedSessionCont
 			ipAddress: requestMeta.ipAddress,
 			userAgent: requestMeta.userAgent,
 		} satisfies Partial<SessionDocument>;
-		touchSession(session._id, refreshed);
+		await touchSession(session._id, refreshed);
 		session.updatedAt = refreshed.updatedAt ?? session.updatedAt;
 		session.expiresAt = refreshed.expiresAt ?? session.expiresAt;
 		session.userAgent = refreshed.userAgent ?? session.userAgent;
@@ -1496,8 +1496,8 @@ async function updateUser(
 	if (payload.fullName) patch.fullName = payload.fullName;
 	if (payload.company) patch.company = payload.company;
 
-	updateUserFields(userId, patch);
-	const updated = findUserById(userId);
+	await updateUserFields(userId, patch);
+	const updated = await findUserById(userId);
 	if (!updated) {
 		throw new HttpError(404, "User not found.");
 	}
@@ -1506,10 +1506,10 @@ async function updateUser(
 
 async function deleteUser(userId: string): Promise<void> {
 	await getDb();
-	deleteUserById(userId);
-	dbDeleteSessionsByUserId(userId);
-	deleteBillingRecordsForUser(userId);
-	deleteWalletDataForUser(userId);
+	await deleteUserById(userId);
+	await dbDeleteSessionsByUserId(userId);
+	await deleteBillingRecordsForUser(userId);
+	await deleteWalletDataForUser(userId);
 }
 
 async function requirePrivilegedSession(request: Request): Promise<ResolvedSessionContext> {
@@ -1527,7 +1527,7 @@ async function requirePrivilegedSession(request: Request): Promise<ResolvedSessi
 
 async function listAdminUsers(): Promise<AdminUserListResponse> {
 	await getDb();
-	const userDocs = listAllUsersSortedByCreatedDesc();
+	const userDocs = await listAllUsersSortedByCreatedDesc();
 	const mappedUsers = userDocs.map((user) => toAuthUser(user));
 	const stats: AdminUserListStats = {
 		totalUsers: mappedUsers.length,
@@ -1563,7 +1563,7 @@ async function createUserByAdmin(payload: AdminCreateUserPayload): Promise<WithI
 	};
 
 	try {
-		insertUser(user);
+		await insertUser(user);
 	} catch (error) {
 		if (isUniqueConstraintError(error)) {
 			if (uniqueConstraintColumn(error) === "id") {
@@ -1583,7 +1583,7 @@ async function updateUserByAdmin(
 	payload: AdminUpdateUserPayload,
 ): Promise<WithId<UserDocument>> {
 	await getDb();
-	const target = findUserById(targetUserId);
+	const target = await findUserById(targetUserId);
 	if (!target) {
 		throw new HttpError(404, "User not found.");
 	}
@@ -1620,7 +1620,7 @@ async function updateUserByAdmin(
 	}
 
 	try {
-		updateUserFields(targetUserId, patch);
+		await updateUserFields(targetUserId, patch);
 	} catch (error) {
 		if (isUniqueConstraintError(error)) {
 			throw new HttpError(409, "A user with this email already exists.");
@@ -1628,7 +1628,7 @@ async function updateUserByAdmin(
 		throw error;
 	}
 
-	const updated = findUserById(targetUserId);
+	const updated = await findUserById(targetUserId);
 	if (!updated) {
 		throw new HttpError(404, "User not found.");
 	}
@@ -1637,7 +1637,7 @@ async function updateUserByAdmin(
 
 async function deleteUserByAdmin(actor: WithId<UserDocument>, targetUserId: string): Promise<void> {
 	await getDb();
-	const target = findUserById(targetUserId);
+	const target = await findUserById(targetUserId);
 
 	if (!target) {
 		throw new HttpError(404, "User not found.");
@@ -1677,7 +1677,7 @@ async function handleSignup(request: Request): Promise<Response> {
 	// later by a background job links back to the same place.
 	const signupOrigin = resolveRequestAppOrigin(request);
 	if (signupOrigin) {
-		updateUserFields(user._id, { preferredOrigin: signupOrigin, updatedAt: new Date() });
+		await updateUserFields(user._id, { preferredOrigin: signupOrigin, updatedAt: new Date() });
 		user.preferredOrigin = signupOrigin;
 	}
 
@@ -1697,10 +1697,10 @@ async function handleSignup(request: Request): Promise<Response> {
 }
 
 /** Keeps a user's remembered domain in step with where they actually sign in. */
-function rememberAppOrigin(request: Request, user: WithId<UserDocument>): void {
+async function rememberAppOrigin(request: Request, user: WithId<UserDocument>): Promise<void> {
 	const origin = resolveRequestAppOrigin(request);
 	if (!origin || user.preferredOrigin === origin) return;
-	updateUserFields(user._id, { preferredOrigin: origin, updatedAt: new Date() });
+	await updateUserFields(user._id, { preferredOrigin: origin, updatedAt: new Date() });
 	user.preferredOrigin = origin;
 }
 
@@ -1721,7 +1721,7 @@ async function handleLogin(request: Request): Promise<Response> {
 	// Only after the session is actually granted — a login refused by the
 	// device-session cap should not move where this account's mail points.
 	const session = await createSession(user._id, getSessionRequestMeta(request));
-	rememberAppOrigin(request, user);
+	await rememberAppOrigin(request, user);
 
 	return jsonResponse(request, 200, buildAuthSuccessResponse(user), {
 		"Set-Cookie": createSessionCookie(session._id, request),
@@ -1760,26 +1760,26 @@ async function handleVerifyEmail(request: Request): Promise<Response> {
 		return jsonResponse(request, 200, already);
 	}
 
-	const record = findEmailVerificationCode(user._id);
+	const record = await findEmailVerificationCode(user._id);
 	if (!record) {
 		throw new HttpError(400, "Request a new code to continue.");
 	}
 
 	if (record.expiresAt.getTime() <= Date.now()) {
-		deleteEmailVerificationCode(user._id);
+		await deleteEmailVerificationCode(user._id);
 		throw new HttpError(400, "That code has expired. Request a new one.");
 	}
 
 	if (record.attempts >= EMAIL_VERIFICATION_MAX_ATTEMPTS) {
-		deleteEmailVerificationCode(user._id);
+		await deleteEmailVerificationCode(user._id);
 		throw new HttpError(429, "Too many incorrect codes. Request a new one.");
 	}
 
 	if (!(await Bun.password.verify(payload.code, record.codeHash))) {
-		const attempts = incrementEmailVerificationAttempts(user._id);
+		const attempts = await incrementEmailVerificationAttempts(user._id);
 		const remaining = Math.max(0, EMAIL_VERIFICATION_MAX_ATTEMPTS - attempts);
 		if (remaining === 0) {
-			deleteEmailVerificationCode(user._id);
+			await deleteEmailVerificationCode(user._id);
 			throw new HttpError(429, "Too many incorrect codes. Request a new one.");
 		}
 		throw new HttpError(
@@ -1788,8 +1788,8 @@ async function handleVerifyEmail(request: Request): Promise<Response> {
 		);
 	}
 
-	updateUserFields(user._id, { emailVerified: true, updatedAt: new Date() });
-	deleteEmailVerificationCode(user._id);
+	await updateUserFields(user._id, { emailVerified: true, updatedAt: new Date() });
+	await deleteEmailVerificationCode(user._id);
 
 	const response: VerifyEmailResponse = { verified: true, email: user.email };
 	return jsonResponse(request, 200, response);
@@ -1809,7 +1809,7 @@ async function handleResendVerification(request: Request): Promise<Response> {
 	await getDb();
 	// A per-account cooldown on top of the per-IP rate limit, so one signed-in
 	// account cannot be used to repeatedly mail its own inbox.
-	const existing = findEmailVerificationCode(session.user._id);
+	const existing = await findEmailVerificationCode(session.user._id);
 	if (existing) {
 		const elapsed = Date.now() - existing.lastSentAt.getTime();
 		if (elapsed < EMAIL_VERIFICATION_RESEND_COOLDOWN_MS) {
@@ -2092,8 +2092,7 @@ async function checkRdosApi(): Promise<StatusCheckResult> {
 async function checkReleaseArchive(): Promise<StatusCheckResult> {
 	const startedAt = Date.now();
 	try {
-		const instance = await getDb();
-		instance.query("SELECT id FROM release_versions LIMIT 1").get();
+		await findMostRecentReleaseByPublishedDesc();
 		return {
 			status: "operational",
 			latencyMs: Date.now() - startedAt,
