@@ -1,3 +1,4 @@
+import { HeroLinkPanel } from "@/components/home/hero-link-panel";
 import { AnimatedPage } from "@/components/layout/animated-page";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
@@ -12,13 +13,6 @@ const heroStats = [
 	{ v: "99.95%", k: "Link uptime, 90 days", tone: "text-success" },
 	{ v: "24 mo", k: "Raw frame retention", tone: "text-foreground" },
 	{ v: "ap-south-1", k: "Sole data region", tone: "text-secondary" },
-];
-
-const heroTelemetry = [
-	{ k: "Alt AGL", v: "118 m", tone: "text-foreground" },
-	{ k: "Speed", v: "14.2", tone: "text-foreground" },
-	{ k: "GPS", v: "RTK", tone: "text-success" },
-	{ k: "Batt", v: "68%", tone: "text-success" },
 ];
 
 const pillars = [
@@ -226,136 +220,7 @@ export function HomePage() {
 					</div>
 				</div>
 
-				<div className="hero-panel glass-panel overflow-hidden rounded-2xl shadow-[0_40px_90px_-50px_oklch(0.55_0.2_293/0.7)]">
-					<div className="flex items-center gap-2 border-b border-border/70 px-3.5 py-2.5">
-						<span className="relative flex h-2 w-2">
-							<span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-75" />
-							<span className="relative inline-flex h-2 w-2 rounded-full bg-success" />
-						</span>
-						<span className="font-code text-[10.5px] tracking-[0.08em] text-muted-foreground">
-							RDOS · LIVE LINK · RCX-114
-						</span>
-						<span className="font-code ml-auto text-[10px] text-muted-foreground/70">18 ms</span>
-					</div>
-
-					<div className="relative h-[216px] bg-background">
-						<svg
-							viewBox="0 0 470 216"
-							className="absolute inset-0 h-full w-full"
-							aria-hidden="true"
-						>
-							<defs>
-								<pattern id="hero-grid" width="33" height="33" patternUnits="userSpaceOnUse">
-									<path d="M33 0H0v33" fill="none" stroke="oklch(1 0 0 / 6%)" strokeWidth="1" />
-								</pattern>
-							</defs>
-							<rect width="470" height="216" fill="url(#hero-grid)" />
-							<path
-								d="M0 158 C70 138, 128 152, 186 128 S 320 96, 386 112 S 452 92, 470 82 L470 216 L0 216 Z"
-								fill="oklch(0.34 0.05 200 / 25%)"
-								stroke="oklch(0.5 0.06 200 / 55%)"
-								strokeWidth="1.1"
-							/>
-							<path
-								d="M56 182 L56 46 L152 46 L152 182 L248 182 L248 46 L344 46 L344 182"
-								fill="none"
-								stroke="oklch(0.72 0.19 293 / 28%)"
-								strokeWidth="8"
-								strokeLinejoin="round"
-								strokeLinecap="round"
-							/>
-							<path
-								d="M56 182 L56 46 L152 46 L152 182 L248 182 L248 110"
-								fill="none"
-								stroke="oklch(0.8 0.15 192)"
-								strokeWidth="1.8"
-							/>
-							<circle cx="248" cy="110" r="16" fill="oklch(0.8 0.15 192 / 14%)" />
-							<g transform="translate(248 110) rotate(180)">
-								<path
-									d="M0 -9 L7 8 L0 3.5 L-7 8 Z"
-									fill="oklch(0.8 0.15 192)"
-									stroke="oklch(0.128 0.016 250)"
-									strokeWidth="1.1"
-								/>
-							</g>
-							<g fontFamily="JetBrains Mono, monospace" fontSize="7.5" fill="oklch(0.6 0.015 286)">
-								{[
-									[56, 182],
-									[56, 46],
-									[152, 46],
-									[152, 182],
-									[248, 182],
-									[344, 46],
-									[344, 182],
-								].map(([cx, cy]) => (
-									<circle
-										key={`${cx}-${cy}`}
-										cx={cx}
-										cy={cy}
-										r="3.4"
-										fill="oklch(0.19 0.02 285)"
-										stroke="oklch(0.72 0.19 293)"
-										strokeWidth="1.4"
-									/>
-								))}
-							</g>
-							<rect
-								x="12"
-								y="12"
-								width="112"
-								height="34"
-								rx="5"
-								fill="oklch(0.145 0.017 285 / 88%)"
-								stroke="oklch(1 0 0 / 10%)"
-							/>
-							<text
-								x="20"
-								y="26"
-								fontFamily="JetBrains Mono, monospace"
-								fontSize="8"
-								fill="oklch(0.62 0.015 286)"
-							>
-								12.90411 N
-							</text>
-							<text
-								x="20"
-								y="38"
-								fontFamily="JetBrains Mono, monospace"
-								fontSize="8"
-								fill="oklch(0.62 0.015 286)"
-							>
-								77.61344 E
-							</text>
-						</svg>
-					</div>
-
-					<div className="grid grid-cols-2 border-t border-border/70 sm:grid-cols-4">
-						{heroTelemetry.map((t) => (
-							<div key={t.k} className="border-r border-border/50 px-3 py-2.5 last:border-r-0">
-								<div className="text-[8.5px] tracking-[0.12em] text-muted-foreground uppercase">
-									{t.k}
-								</div>
-								<div className={cn("font-code mt-1 text-[15px] font-semibold", t.tone)}>{t.v}</div>
-							</div>
-						))}
-					</div>
-
-					<div className="font-code space-y-0.5 border-t border-border/70 px-3.5 py-2.5 text-[10px] leading-[1.75] text-muted-foreground">
-						<div>
-							<span className="text-muted-foreground/60">33</span>{" "}
-							<span className="text-secondary">GLOBAL_POSITION_INT</span> 10 Hz
-						</div>
-						<div>
-							<span className="text-muted-foreground/60">30</span>{" "}
-							<span className="text-secondary">ATTITUDE</span> 20 Hz
-						</div>
-						<div>
-							<span className="text-muted-foreground/60">253</span>{" "}
-							<span className="text-success">STATUSTEXT</span> Reached waypoint #5
-						</div>
-					</div>
-				</div>
+				<HeroLinkPanel />
 			</section>
 
 			<section>
