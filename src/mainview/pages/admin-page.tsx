@@ -1,6 +1,7 @@
 import { SubscriptionManagementSection } from "@/components/admin/subscription-management-section";
 import { WhatsAppEventsSection } from "@/components/admin/whatsapp-events-section";
 import { useAuth } from "@/components/auth/auth-provider";
+import { formatWhatsAppPhone } from "@/components/auth/whatsapp-auth";
 import { AnimatedPage } from "@/components/layout/animated-page";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -10,7 +11,12 @@ import { Textarea } from "@/components/ui/textarea";
 import { authApi } from "@/lib/auth-api";
 import { cn } from "@/lib/utils";
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
-import type { AdminCreateUserPayload, AdminUserListStats, AuthUser } from "shared/auth";
+import type {
+	AdminCreateUserPayload,
+	AdminUserListStats,
+	AuthUser,
+	SignupMethod,
+} from "shared/auth";
 import {
 	RELEASE_FORMATS,
 	RELEASE_PLATFORMS,
@@ -57,7 +63,41 @@ const EMPTY_STATS: AdminUserListStats = {
 	totalUsers: 0,
 	adminUsers: 0,
 	ownerUsers: 0,
+	whatsappSignups: 0,
+	whatsappLinked: 0,
 };
+
+const SIGNUP_METHOD_LABELS: Record<SignupMethod, string> = {
+	email: "Signed up with email",
+	whatsapp: "Signed up with WhatsApp",
+	admin: "Created by admin",
+};
+
+const USER_FILTERS = [
+	{ key: "all", label: "All" },
+	{ key: "whatsapp-signups", label: "WhatsApp signups" },
+	{ key: "whatsapp-linked", label: "WhatsApp linked" },
+	{ key: "whatsapp-not-linked", label: "WhatsApp not linked" },
+] as const;
+
+type UserFilterKey = (typeof USER_FILTERS)[number]["key"];
+
+function isWhatsAppLinked(user: AuthUser): boolean {
+	return Boolean(user.phone && user.phoneVerified);
+}
+
+function matchesUserFilter(user: AuthUser, filter: UserFilterKey): boolean {
+	switch (filter) {
+		case "whatsapp-signups":
+			return user.signupMethod === "whatsapp";
+		case "whatsapp-linked":
+			return isWhatsAppLinked(user);
+		case "whatsapp-not-linked":
+			return !isWhatsAppLinked(user);
+		default:
+			return true;
+	}
+}
 
 function formatDate(value: string): string {
 	try {
@@ -787,6 +827,7 @@ export function AdminPage() {
 	const [activeTab, setActiveTab] = useState<AdminTabKey>("users");
 	const viewerIsOwner = Boolean(viewer?.isOwner);
 	const [users, setUsers] = useState<AuthUser[]>([]);
+	const [userFilter, setUserFilter] = useState<UserFilterKey>("all");
 	const [stats, setStats] = useState<AdminUserListStats>(EMPTY_STATS);
 	const [drafts, setDrafts] = useState<Record<string, UserDraft>>({});
 	const [loading, setLoading] = useState(true);
@@ -852,8 +893,15 @@ export function AdminPage() {
 			{ label: "Admins", value: stats.adminUsers },
 			{ label: "Owners", value: stats.ownerUsers },
 			{ label: "Unverified Emails", value: unverifiedCount },
+			{ label: "WhatsApp Signups", value: stats.whatsappSignups },
+			{ label: "WhatsApp Linked", value: stats.whatsappLinked },
 		],
 		[stats, unverifiedCount],
+	);
+
+	const filteredUsers = useMemo(
+		() => users.filter((user) => matchesUserFilter(user, userFilter)),
+		[users, userFilter],
 	);
 
 	const updateDraft = (userId: string, patch: Partial<UserDraft>) => {
@@ -985,7 +1033,7 @@ export function AdminPage() {
 						</CardDescription>
 					</CardHeader>
 					<CardContent className="space-y-4">
-						<div className="grid gap-3 md:grid-cols-4">
+						<div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
 							{roleBreakdown.map((item) => (
 								<div
 									key={item.label}
@@ -1166,10 +1214,40 @@ export function AdminPage() {
 								</CardDescription>
 							</CardHeader>
 							<CardContent className="space-y-4">
-								{users.length === 0 ? (
+								<fieldset className="flex flex-wrap gap-1.5">
+									<legend className="sr-only">Filter users</legend>
+									{USER_FILTERS.map((filter) => {
+										const count = users.filter((user) =>
+											matchesUserFilter(user, filter.key),
+										).length;
+										const selected = userFilter === filter.key;
+										return (
+											<label
+												key={filter.key}
+												className={cn(
+													"cursor-pointer rounded-md border px-2.5 py-1 text-xs font-medium transition-colors has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring",
+													selected
+														? "border-primary/40 bg-primary/15 text-primary"
+														: "border-border/65 text-muted-foreground hover:text-foreground",
+												)}
+											>
+												<input
+													type="radio"
+													name="admin-user-filter"
+													value={filter.key}
+													checked={selected}
+													onChange={() => setUserFilter(filter.key)}
+													className="sr-only"
+												/>
+												{filter.label} <span className="opacity-70">{count}</span>
+											</label>
+										);
+									})}
+								</fieldset>
+								{filteredUsers.length === 0 ? (
 									<p className="text-sm text-muted-foreground">No users found.</p>
 								) : (
-									users.map((user) => {
+									filteredUsers.map((user) => {
 										const draft = drafts[user.id] ?? toDraft(user);
 										const fullNameInputId = `user-${user.id}-fullName`;
 										const companyInputId = `user-${user.id}-company`;
@@ -1194,18 +1272,49 @@ export function AdminPage() {
 														<p className="text-xs text-muted-foreground">
 															ID: {user.id} • Created: {formatDate(user.createdAt)}
 														</p>
+														<p className="mt-1 text-xs text-muted-foreground">
+															{SIGNUP_METHOD_LABELS[user.signupMethod]} •{" "}
+															{isWhatsAppLinked(user) && user.phone ? (
+																<>
+																	WhatsApp{" "}
+																	<span className="font-medium text-foreground">
+																		{formatWhatsAppPhone(user.phone)}
+																	</span>
+																	{user.phoneLinkedAt
+																		? `, linked ${formatDate(user.phoneLinkedAt)}`
+																		: ", linked"}
+																</>
+															) : (
+																"WhatsApp not linked"
+															)}
+															{user.hasPassword ? "" : " • No password (WhatsApp sign-in only)"}
+														</p>
 													</div>
 													<div className="flex flex-wrap gap-2">
 														{isSelf ? (
 															<Badge className="bg-secondary/15 text-secondary">You</Badge>
 														) : null}
+														{user.signupMethod === "whatsapp" ? (
+															<Badge variant="secondary" className="bg-primary/12 text-primary">
+																WhatsApp signup
+															</Badge>
+														) : null}
+														{isWhatsAppLinked(user) ? (
+															<Badge variant="secondary" className="bg-success/12 text-success">
+																WhatsApp linked
+															</Badge>
+														) : (
+															<Badge variant="secondary" className="bg-muted text-muted-foreground">
+																WhatsApp not linked
+															</Badge>
+														)}
 														{user.emailVerified ? (
 															<Badge variant="secondary" className="bg-success/12 text-success">
-																Verified
+																Email verified
 															</Badge>
 														) : (
 															<Badge variant="secondary" className="bg-warning/12 text-warning">
-																Unverified
+																Email unverified
 															</Badge>
 														)}
 														{user.roles.map((role) => (

@@ -33,7 +33,11 @@ import {
 	WHATSAPP_CODE_LENGTH,
 	type WhatsAppCodeSentResponse,
 	type WhatsAppLoginStartPayload,
+	type WhatsAppLinkStartPayload,
+	type WhatsAppLinkVerifyPayload,
 	type WhatsAppLoginVerifyPayload,
+	SIGNUP_METHODS,
+	type SignupMethod,
 	type WhatsAppOtpPurpose,
 	type WhatsAppSignupStartPayload,
 	type WhatsAppSignupVerifyPayload,
@@ -456,7 +460,17 @@ function sanitizeUserRoles(roles: unknown): UserRole[] {
 	return [DEFAULT_USER_ROLE];
 }
 
+/**
+ * Accounts from before `signupMethod` was recorded: only WhatsApp signup ever
+ * created an account without a password, so that is the one case to infer.
+ */
+function resolveSignupMethod(user: WithId<UserDocument>, hasPassword: boolean): SignupMethod {
+	if (user.signupMethod && SIGNUP_METHODS.includes(user.signupMethod)) return user.signupMethod;
+	return hasPassword ? "email" : "whatsapp";
+}
+
 function toAuthUser(user: WithId<UserDocument>): AuthUser {
+	const hasPassword = typeof user.passwordHash === "string" && user.passwordHash.length > 0;
 	const isAdmin = sanitizeRoleFlag(user.isAdmin);
 	const isOwner = sanitizeRoleFlag(user.isOwner);
 	const storedRoles = sanitizeUserRoles(user.roles).filter(
@@ -481,7 +495,9 @@ function toAuthUser(user: WithId<UserDocument>): AuthUser {
 		emailVerified: sanitizeRoleFlag(user.emailVerified),
 		phone: typeof user.phone === "string" ? user.phone : null,
 		phoneVerified: sanitizeRoleFlag(user.phoneVerified),
-		hasPassword: typeof user.passwordHash === "string" && user.passwordHash.length > 0,
+		phoneLinkedAt: user.phoneLinkedAt instanceof Date ? user.phoneLinkedAt.toISOString() : null,
+		hasPassword,
+		signupMethod: resolveSignupMethod(user, hasPassword),
 		roles,
 		createdAt: user.createdAt.toISOString(),
 		updatedAt: user.updatedAt.toISOString(),
@@ -747,6 +763,16 @@ function parseWhatsAppLoginStartPayload(payload: unknown): WhatsAppLoginStartPay
 
 function parseWhatsAppLoginVerifyPayload(payload: unknown): WhatsAppLoginVerifyPayload {
 	const body = asPayloadObject(payload, "WhatsApp sign-in");
+	return { phone: parseWhatsAppPhone(body.phone), code: parseWhatsAppCode(body.code) };
+}
+
+function parseWhatsAppLinkStartPayload(payload: unknown): WhatsAppLinkStartPayload {
+	const body = asPayloadObject(payload, "WhatsApp link");
+	return { phone: parseWhatsAppPhone(body.phone) };
+}
+
+function parseWhatsAppLinkVerifyPayload(payload: unknown): WhatsAppLinkVerifyPayload {
+	const body = asPayloadObject(payload, "WhatsApp link");
 	return { phone: parseWhatsAppPhone(body.phone), code: parseWhatsAppCode(body.code) };
 }
 
@@ -1409,6 +1435,8 @@ async function insertSelfServiceUser(fields: NewSelfServiceUser): Promise<WithId
 		roles: [DEFAULT_USER_ROLE],
 		phone: fields.verifiedPhone ?? null,
 		phoneVerified: Boolean(fields.verifiedPhone),
+		phoneLinkedAt: fields.verifiedPhone ? now : null,
+		signupMethod: fields.verifiedPhone ? "whatsapp" : "email",
 		passwordHash: fields.passwordHash,
 		createdAt: now,
 		updatedAt: now,
@@ -1655,6 +1683,8 @@ async function listAdminUsers(): Promise<AdminUserListResponse> {
 		totalUsers: mappedUsers.length,
 		adminUsers: mappedUsers.filter((user) => user.isAdmin).length,
 		ownerUsers: mappedUsers.filter((user) => user.isOwner).length,
+		whatsappSignups: mappedUsers.filter((user) => user.signupMethod === "whatsapp").length,
+		whatsappLinked: mappedUsers.filter((user) => user.phone && user.phoneVerified).length,
 	};
 
 	return {
@@ -1679,6 +1709,7 @@ async function createUserByAdmin(payload: AdminCreateUserPayload): Promise<WithI
 		isOwner: payload.isOwner ?? false,
 		emailVerified: true,
 		roles: [DEFAULT_USER_ROLE],
+		signupMethod: "admin",
 		passwordHash,
 		createdAt: now,
 		updatedAt: now,
@@ -1980,6 +2011,8 @@ function assertWhatsAppConfigured(): void {
 async function sendWhatsAppCode(
 	phone: string,
 	purpose: WhatsAppOtpPurpose,
+	/** For a link code: the signed-in account it is being sent for. */
+	userId?: string,
 ): Promise<WhatsAppCodeSentResponse> {
 	await getDb();
 	const existing = await findWhatsAppOtpChallenge(phone);
@@ -2010,6 +2043,7 @@ async function sendWhatsAppCode(
 	await upsertWhatsAppOtpChallenge({
 		phone,
 		purpose,
+		userId: userId ?? null,
 		expiresAt: new Date(Date.now() + WHATSAPP_CODE_TTL_MS),
 	});
 
@@ -2030,11 +2064,14 @@ async function consumeWhatsAppCode(
 	phone: string,
 	code: string,
 	purpose: WhatsAppOtpPurpose,
+	/** For a link code: only the account that asked for it may spend it. */
+	userId?: string,
 ): Promise<void> {
 	await getDb();
 	const challenge = await findWhatsAppOtpChallenge(phone);
-	// A code sent for signup must not open an existing account, or the reverse.
-	if (!challenge || challenge.purpose !== purpose) {
+	// A code sent for signup must not open an existing account, or the reverse,
+	// and a link code asked for by one account cannot be spent by another.
+	if (!challenge || challenge.purpose !== purpose || challenge.userId !== (userId ?? null)) {
 		throw new HttpError(400, "Request a new code to continue.");
 	}
 
@@ -2108,15 +2145,84 @@ async function handleWhatsAppLogin(request: Request): Promise<Response> {
 	await consumeWhatsAppCode(phone, code, "login");
 
 	const session = await createSession(user._id, getSessionRequestMeta(request));
-	if (!sanitizeRoleFlag(user.phoneVerified)) {
-		await updateUserFields(user._id, { phoneVerified: true, updatedAt: new Date() });
+	if (!sanitizeRoleFlag(user.phoneVerified) || !user.phoneLinkedAt) {
+		const now = new Date();
+		const phoneLinkedAt = user.phoneLinkedAt ?? now;
+		await updateUserFields(user._id, { phoneVerified: true, phoneLinkedAt, updatedAt: now });
 		user.phoneVerified = true;
+		user.phoneLinkedAt = phoneLinkedAt;
 	}
 	await rememberAppOrigin(request, user);
 
 	return jsonResponse(request, 200, buildAuthSuccessResponse(user), {
 		"Set-Cookie": createSessionCookie(session._id, request),
 	});
+}
+
+const WHATSAPP_ALREADY_LINKED_MESSAGE =
+	"This WhatsApp number is already linked to another account.";
+
+/** The signed-in account, refusing one that already has a WhatsApp number linked. */
+async function requireAccountWithoutWhatsApp(request: Request): Promise<WithId<UserDocument>> {
+	const session = await resolveSessionUser(request);
+	if (!session) {
+		throw new HttpError(401, "Sign in to link a WhatsApp number.");
+	}
+	if (session.user.phone && sanitizeRoleFlag(session.user.phoneVerified)) {
+		throw new HttpError(409, "Your account already has a WhatsApp number linked.");
+	}
+	return session.user;
+}
+
+/** Refuses a number that belongs to any account other than `userId`. */
+async function assertPhoneFreeFor(phone: string, userId: string): Promise<void> {
+	const owner = await findUserByPhone(phone);
+	if (owner && owner._id !== userId) {
+		throw new HttpError(409, WHATSAPP_ALREADY_LINKED_MESSAGE);
+	}
+}
+
+async function handleWhatsAppLinkStart(request: Request): Promise<Response> {
+	assertWithinRateLimit(request, "whatsapp:send", AUTH_WHATSAPP_SEND_RATE_LIMIT);
+	const user = await requireAccountWithoutWhatsApp(request);
+	const { phone } = parseWhatsAppLinkStartPayload(await readRequestJson(request));
+	assertWhatsAppConfigured();
+
+	await getDb();
+	await assertPhoneFreeFor(phone, user._id);
+
+	return jsonResponse(request, 200, await sendWhatsAppCode(phone, "link", user._id));
+}
+
+async function handleWhatsAppLink(request: Request): Promise<Response> {
+	assertWithinRateLimit(request, "whatsapp:verify", AUTH_WHATSAPP_VERIFY_RATE_LIMIT);
+	const user = await requireAccountWithoutWhatsApp(request);
+	const { phone, code } = parseWhatsAppLinkVerifyPayload(await readRequestJson(request));
+	assertWhatsAppConfigured();
+
+	await getDb();
+	await assertPhoneFreeFor(phone, user._id);
+	await consumeWhatsAppCode(phone, code, "link", user._id);
+
+	const now = new Date();
+	try {
+		await updateUserFields(user._id, {
+			phone,
+			phoneVerified: true,
+			phoneLinkedAt: now,
+			updatedAt: now,
+		});
+	} catch (error) {
+		// Another account linked or signed up with this number since the check above.
+		if (uniqueConstraintColumn(error) === "phone") {
+			throw new HttpError(409, WHATSAPP_ALREADY_LINKED_MESSAGE);
+		}
+		throw error;
+	}
+
+	const updated = await findUserById(user._id);
+	if (!updated) throw new HttpError(404, "User not found.");
+	return jsonResponse(request, 200, buildAuthSuccessResponse(updated));
 }
 
 /** Refuses a signup whose email or number is already taken, before any code is spent. */
@@ -3007,6 +3113,14 @@ async function routeRequest(request: Request): Promise<Response> {
 
 	if (request.method === "POST" && url.pathname === `${AUTH_BASE_PATH}/whatsapp/send`) {
 		return handleWhatsAppLoginStart(request);
+	}
+
+	if (request.method === "POST" && url.pathname === `${AUTH_BASE_PATH}/whatsapp/link/send`) {
+		return handleWhatsAppLinkStart(request);
+	}
+
+	if (request.method === "POST" && url.pathname === `${AUTH_BASE_PATH}/whatsapp/link`) {
+		return handleWhatsAppLink(request);
 	}
 
 	if (request.method === "POST" && url.pathname === `${AUTH_BASE_PATH}/whatsapp`) {

@@ -15,6 +15,7 @@ export async function insertUser(user: WithId<UserDocument>): Promise<void> {
 		preferredOrigin: user.preferredOrigin ?? null,
 		phone: user.phone ?? null,
 		phoneVerified: Boolean(user.phoneVerified),
+		phoneLinkedAt: user.phoneLinkedAt ?? null,
 	});
 }
 
@@ -49,6 +50,7 @@ export async function updateUserFields(id: string, patch: Partial<UserDocument>)
 	if (patch.preferredOrigin !== undefined) set.preferredOrigin = patch.preferredOrigin ?? null;
 	if (patch.phone !== undefined) set.phone = patch.phone ?? null;
 	if (patch.phoneVerified !== undefined) set.phoneVerified = Boolean(patch.phoneVerified);
+	if (patch.phoneLinkedAt !== undefined) set.phoneLinkedAt = patch.phoneLinkedAt ?? null;
 	if (patch.passwordHash !== undefined) set.passwordHash = patch.passwordHash;
 	if (patch.roles !== undefined) set.roles = patch.roles;
 	if (patch.updatedAt !== undefined) set.updatedAt = patch.updatedAt;

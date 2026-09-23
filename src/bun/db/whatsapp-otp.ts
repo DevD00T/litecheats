@@ -8,6 +8,7 @@ import type { WhatsAppOtpChallengeRecord } from "./types";
 interface ChallengeStored {
 	_id: string;
 	purpose: WhatsAppOtpPurpose;
+	userId?: string | null;
 	attempts: number;
 	lastSentAt: Date;
 	expiresAt: Date;
@@ -20,6 +21,7 @@ function toRecord(stored: ChallengeStored): WhatsAppOtpChallengeRecord {
 	return {
 		phone: stored._id,
 		purpose: stored.purpose,
+		userId: stored.userId ?? null,
 		attempts: stored.attempts,
 		lastSentAt: stored.lastSentAt,
 		expiresAt: stored.expiresAt,
@@ -31,6 +33,8 @@ function toRecord(stored: ChallengeStored): WhatsAppOtpChallengeRecord {
 export async function upsertWhatsAppOtpChallenge(params: {
 	phone: string;
 	purpose: WhatsAppOtpPurpose;
+	/** Binds a link code to the signed-in account that asked for it. */
+	userId?: string | null;
 	expiresAt: Date;
 }): Promise<void> {
 	const now = new Date();
@@ -40,6 +44,7 @@ export async function upsertWhatsAppOtpChallenge(params: {
 			{
 				$set: {
 					purpose: params.purpose,
+					userId: params.userId ?? null,
 					expiresAt: params.expiresAt,
 					attempts: 0,
 					lastSentAt: now,

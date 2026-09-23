@@ -8,6 +8,10 @@ export const USER_ROLES = ["user", "admin", "owner"] as const;
 export type UserRole = (typeof USER_ROLES)[number];
 export const DEFAULT_USER_ROLE: UserRole = "user";
 
+/** How an account was first created. */
+export const SIGNUP_METHODS = ["email", "whatsapp", "admin"] as const;
+export type SignupMethod = (typeof SIGNUP_METHODS)[number];
+
 export interface AuthUser {
 	id: string;
 	email: string;
@@ -19,8 +23,11 @@ export interface AuthUser {
 	/** WhatsApp number in international form without "+", e.g. "919876543210". */
 	phone: string | null;
 	phoneVerified: boolean;
+	/** When the WhatsApp number was proven, at signup or by linking it later. */
+	phoneLinkedAt: string | null;
 	/** False for accounts created through WhatsApp, which sign in with a code instead. */
 	hasPassword: boolean;
+	signupMethod: SignupMethod;
 	roles: UserRole[];
 	createdAt: string;
 	updatedAt: string;
@@ -87,6 +94,10 @@ export interface AdminUserListStats {
 	totalUsers: number;
 	adminUsers: number;
 	ownerUsers: number;
+	/** Accounts opened through WhatsApp signup. */
+	whatsappSignups: number;
+	/** Accounts with a verified WhatsApp number, however it got there. */
+	whatsappLinked: number;
 }
 
 export interface AdminUserListResponse {
@@ -138,7 +149,7 @@ export interface ResendVerificationResponse {
 /** Digits in the one-time code sent over WhatsApp. */
 export const WHATSAPP_CODE_LENGTH = 6;
 
-export const WHATSAPP_OTP_PURPOSES = ["login", "signup"] as const;
+export const WHATSAPP_OTP_PURPOSES = ["login", "signup", "link"] as const;
 export type WhatsAppOtpPurpose = (typeof WHATSAPP_OTP_PURPOSES)[number];
 
 /** Asks for a code to sign in to the account that owns this number. */
@@ -163,6 +174,16 @@ export interface WhatsAppSignupStartPayload {
 }
 
 export interface WhatsAppSignupVerifyPayload extends WhatsAppSignupStartPayload {
+	code: string;
+}
+
+/** A signed-in user asks for a link code, to add this number to their account. */
+export interface WhatsAppLinkStartPayload {
+	phone: string;
+}
+
+export interface WhatsAppLinkVerifyPayload {
+	phone: string;
 	code: string;
 }
 

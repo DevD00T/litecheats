@@ -1,4 +1,4 @@
-import type { UserRole, WhatsAppOtpPurpose } from "../../../shared/auth";
+import type { SignupMethod, UserRole, WhatsAppOtpPurpose } from "../../../shared/auth";
 import type {
 	BillingCycle,
 	BillingMode,
@@ -31,6 +31,10 @@ export interface UserDocument {
 	/** WhatsApp number, digits only with country code (e.g. "919876543210"), or null. */
 	phone?: string | null;
 	phoneVerified?: unknown;
+	/** When the number was proven with a WhatsApp code (signup or linking), or null. */
+	phoneLinkedAt?: Date | null;
+	/** Missing on accounts that predate it; toAuthUser infers it for those. */
+	signupMethod?: SignupMethod;
 	/** Null for accounts created through WhatsApp: they have no password to check. */
 	passwordHash: string | null;
 	createdAt: Date;
@@ -58,6 +62,8 @@ export interface WhatsAppWebhookEventDocument {
 export interface WhatsAppOtpChallengeRecord {
 	phone: string;
 	purpose: WhatsAppOtpPurpose;
+	/** For a link code: the signed-in account that asked for it. Null otherwise. */
+	userId: string | null;
 	attempts: number;
 	lastSentAt: Date;
 	expiresAt: Date;

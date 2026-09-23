@@ -1,8 +1,13 @@
 import { Resend } from "resend";
 
 const RESEND_API_KEY = Bun.env.RESEND_API_KEY?.trim();
-const RESEND_FROM_EMAIL =
-	Bun.env.RESEND_FROM_EMAIL?.trim() || "Litecheats Technologies <onboarding@resend.dev>";
+/**
+ * Every one-time code emailed to a customer comes from the support address,
+ * whatever RESEND_FROM_EMAIL says, so a code never arrives from a sandbox or
+ * unfamiliar sender. litecheats.com must be a verified domain in Resend.
+ */
+export const CUSTOMER_OTP_FROM_EMAIL = "Litecheats Enquiry <support@litecheats.com>";
+const RESEND_FROM_EMAIL = Bun.env.RESEND_FROM_EMAIL?.trim() || CUSTOMER_OTP_FROM_EMAIL;
 const PUBLIC_APP_URL = (Bun.env.PUBLIC_APP_URL?.trim() || "http://localhost:8080").replace(
 	/\/+$/,
 	"",
@@ -215,11 +220,7 @@ export async function sendRenewalWarningEmail(params: RenewalWarningParams): Pro
 	}
 }
 
-/**
- * Sends the signup verification code. Uses RESEND_FROM_EMAIL, the same sender
- * as every other transactional message, so the address stays consistent and
- * keeps whatever domain reputation it has built.
- */
+/** Sends the signup verification code, always from CUSTOMER_OTP_FROM_EMAIL. */
 export async function sendVerificationCodeEmail(
 	to: string,
 	fullName: string,
@@ -276,7 +277,7 @@ export async function sendVerificationCodeEmail(
 
 	try {
 		const result = await resend.emails.send({
-			from: RESEND_FROM_EMAIL,
+			from: CUSTOMER_OTP_FROM_EMAIL,
 			to,
 			subject,
 			html,

@@ -13,6 +13,7 @@ import type {
 	LoginPayload,
 	SignupPayload,
 	UpdateProfilePayload,
+	WhatsAppLinkVerifyPayload,
 	WhatsAppLoginVerifyPayload,
 	WhatsAppSignupVerifyPayload,
 } from "shared/auth";
@@ -52,6 +53,7 @@ interface AuthContextValue {
 	signup: (payload: SignupPayload) => Promise<AuthUser>;
 	loginWithWhatsApp: (payload: WhatsAppLoginVerifyPayload) => Promise<AuthUser>;
 	signupWithWhatsApp: (payload: WhatsAppSignupVerifyPayload) => Promise<AuthUser>;
+	linkWhatsApp: (payload: WhatsAppLinkVerifyPayload) => Promise<AuthUser>;
 	logout: () => Promise<void>;
 	updateProfile: (payload: UpdateProfilePayload) => Promise<AuthUser>;
 	deleteAccount: () => Promise<void>;
@@ -114,6 +116,13 @@ export function AuthProvider({ children }: PropsWithChildren) {
 
 	const signupWithWhatsApp = useCallback(async (payload: WhatsAppSignupVerifyPayload) => {
 		const response = await authApi.signupWithWhatsApp(payload);
+		dispatch({ type: "AUTHENTICATED", user: response.user });
+		broadcastAuthSync();
+		return response.user;
+	}, []);
+
+	const linkWhatsApp = useCallback(async (payload: WhatsAppLinkVerifyPayload) => {
+		const response = await authApi.linkWhatsApp(payload);
 		dispatch({ type: "AUTHENTICATED", user: response.user });
 		broadcastAuthSync();
 		return response.user;
@@ -185,6 +194,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
 			signup,
 			loginWithWhatsApp,
 			signupWithWhatsApp,
+			linkWhatsApp,
 			logout,
 			updateProfile,
 			deleteAccount,
@@ -196,6 +206,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
 			signup,
 			loginWithWhatsApp,
 			signupWithWhatsApp,
+			linkWhatsApp,
 			logout,
 			updateProfile,
 			deleteAccount,

@@ -1,5 +1,5 @@
 import type { CreateCollectionOptions, Db, Document, IndexDescription } from "mongodb";
-import { USER_ROLES, WHATSAPP_OTP_PURPOSES } from "../../../shared/auth";
+import { SIGNUP_METHODS, USER_ROLES, WHATSAPP_OTP_PURPOSES } from "../../../shared/auth";
 import {
 	BILLING_CYCLES,
 	BILLING_PLAN_IDS,
@@ -130,6 +130,8 @@ export const COLLECTION_DEFINITIONS: CollectionDefinition[] = [
 				preferredOrigin: nullableString,
 				phone: nullableString,
 				phoneVerified: boolean,
+				phoneLinkedAt: nullableDate,
+				signupMethod: enumOf(SIGNUP_METHODS),
 				// Null for WhatsApp-only accounts, which have no password.
 				passwordHash: nullableString,
 				createdAt: date,
@@ -155,6 +157,7 @@ export const COLLECTION_DEFINITIONS: CollectionDefinition[] = [
 		name: COLLECTIONS.whatsappOtpChallenges,
 		schema: objectSchema(["purpose", "attempts", "lastSentAt", "expiresAt", "createdAt"], {
 			purpose: enumOf(WHATSAPP_OTP_PURPOSES),
+			userId: nullableString,
 			attempts: { bsonType: "number", minimum: 0 },
 			lastSentAt: date,
 			expiresAt: date,

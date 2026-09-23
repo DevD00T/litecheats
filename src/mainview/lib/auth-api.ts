@@ -19,6 +19,8 @@ import {
 	type VerifyEmailPayload,
 	type VerifyEmailResponse,
 	type WhatsAppCodeSentResponse,
+	type WhatsAppLinkStartPayload,
+	type WhatsAppLinkVerifyPayload,
 	type WhatsAppLoginStartPayload,
 	type WhatsAppLoginVerifyPayload,
 	type WhatsAppSignupStartPayload,
@@ -131,6 +133,16 @@ export const authApi = {
 		}),
 	signupWithWhatsApp: (payload: WhatsAppSignupVerifyPayload) =>
 		authRequest<AuthSuccessResponse>("/signup/whatsapp", {
+			method: "POST",
+			body: JSON.stringify(payload),
+		}),
+	sendWhatsAppLinkCode: (payload: WhatsAppLinkStartPayload) =>
+		authRequest<WhatsAppCodeSentResponse>("/whatsapp/link/send", {
+			method: "POST",
+			body: JSON.stringify(payload),
+		}),
+	linkWhatsApp: (payload: WhatsAppLinkVerifyPayload) =>
+		authRequest<AuthSuccessResponse>("/whatsapp/link", {
 			method: "POST",
 			body: JSON.stringify(payload),
 		}),

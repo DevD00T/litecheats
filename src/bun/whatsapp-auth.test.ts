@@ -476,3 +476,160 @@ suite("WhatsApp webhook", () => {
 		expect(statuses.body.events[0].summary).toBe("K1 to 919876543210: READ");
 	});
 });
+
+suite("Linking WhatsApp to an existing account", () => {
+	/** A signed-in visitor holding a fresh email-and-password account. */
+	async function emailAccount() {
+		const visitor = makeVisitor();
+		const email = `link-${crypto.randomUUID().slice(0, 8)}@example.com`;
+		const created = await visitor.send("POST", "/login/signup", {
+			fullName: "Link Tester",
+			company: "Test Co",
+			email,
+			password: "Str0ng!password",
+		});
+		expect(created.status).toBe(201);
+		expect(created.body.user).toMatchObject({ signupMethod: "email", phone: null });
+		return { visitor, email, id: created.body.user.id as string };
+	}
+
+	test("sends a link code, links the number, and the number then signs in", async () => {
+		resetGateway();
+		const { visitor, id } = await emailAccount();
+		const phone = randomPhone();
+
+		const sent = await visitor.send("POST", "/login/whatsapp/link/send", { phone });
+		expect(sent.status).toBe(200);
+		expect(gateway.sends).toEqual([phone]);
+		expect((await db.findWhatsAppOtpChallenge(phone))?.userId).toBe(id);
+
+		const wrong = await visitor.send("POST", "/login/whatsapp/link", { phone, code: "000000" });
+		expect(wrong.status).toBe(400);
+		expect((await db.findUserById(id))?.phone).toBeNull();
+
+		const linked = await visitor.send("POST", "/login/whatsapp/link", { phone, code: "123456" });
+		expect(linked.status).toBe(200);
+		expect(linked.body.user).toMatchObject({
+			phone,
+			phoneVerified: true,
+			signupMethod: "email",
+			hasPassword: true,
+		});
+		expect(linked.body.user.phoneLinkedAt).toEqual(expect.any(String));
+
+		// Linked, the same account can now sign in with WhatsApp on another device.
+		await (await db.getDb())
+			.collection("whatsapp_otp_challenges")
+			.deleteOne({ _id: phone as never });
+		const elsewhere = makeVisitor();
+		await elsewhere.send("POST", "/login/whatsapp/send", { phone });
+		const signedIn = await elsewhere.send("POST", "/login/whatsapp", { phone, code: "123456" });
+		expect(signedIn.status).toBe(200);
+		expect(signedIn.body.user.id).toBe(id);
+	});
+
+	test("needs a signed-in account", async () => {
+		resetGateway();
+		const anonymous = makeVisitor();
+		const response = await anonymous.send("POST", "/login/whatsapp/link/send", {
+			phone: randomPhone(),
+		});
+		expect(response.status).toBe(401);
+		expect(gateway.sends).toEqual([]);
+	});
+
+	test("refuses a number already on another account, before sending anything", async () => {
+		resetGateway();
+		const taken = randomPhone();
+		const details = signupDetails(taken);
+		const owner = makeVisitor();
+		await owner.send("POST", "/login/signup/whatsapp/send", details);
+		await owner.send("POST", "/login/signup/whatsapp", { ...details, code: "123456" });
+		gateway.sends = [];
+
+		const { visitor } = await emailAccount();
+		const response = await visitor.send("POST", "/login/whatsapp/link/send", { phone: taken });
+		expect(response.status).toBe(409);
+		expect(response.body.error).toContain("already linked to another account");
+		expect(gateway.sends).toEqual([]);
+	});
+
+	test("an account that already has WhatsApp linked cannot link another number", async () => {
+		resetGateway();
+		const details = signupDetails(randomPhone());
+		const visitor = makeVisitor();
+		await visitor.send("POST", "/login/signup/whatsapp/send", details);
+		await visitor.send("POST", "/login/signup/whatsapp", { ...details, code: "123456" });
+
+		const response = await visitor.send("POST", "/login/whatsapp/link/send", {
+			phone: randomPhone(),
+		});
+		expect(response.status).toBe(409);
+	});
+
+	test("a link code can only be spent by the account that asked for it", async () => {
+		resetGateway();
+		const requester = await emailAccount();
+		const intruder = await emailAccount();
+		const phone = randomPhone();
+		await requester.visitor.send("POST", "/login/whatsapp/link/send", { phone });
+
+		const stolen = await intruder.visitor.send("POST", "/login/whatsapp/link", {
+			phone,
+			code: "123456",
+		});
+		expect(stolen.status).toBe(400);
+		expect(gateway.verifies).toEqual([]);
+		expect((await db.findUserById(intruder.id))?.phone).toBeNull();
+
+		const own = await requester.visitor.send("POST", "/login/whatsapp/link", {
+			phone,
+			code: "123456",
+		});
+		expect(own.status).toBe(200);
+	});
+
+	test("admins see how each account signed up and whether WhatsApp is linked", async () => {
+		resetGateway();
+		const details = signupDetails(randomPhone());
+		const visitor = makeVisitor();
+		await visitor.send("POST", "/login/signup/whatsapp/send", details);
+		const created = await visitor.send("POST", "/login/signup/whatsapp", {
+			...details,
+			code: "123456",
+		});
+		const { id: emailOnlyId } = await emailAccount();
+
+		const admin = makeVisitor();
+		await admin.send("POST", "/login", {
+			email: "owner-test@example.com",
+			password: "test-owner-password",
+		});
+		const listing = await admin.send("GET", "/login/admin/users");
+		expect(listing.status).toBe(200);
+
+		type Listed = {
+			id: string;
+			signupMethod: string;
+			phone: string | null;
+			phoneVerified: boolean;
+		};
+		const users = listing.body.users as Listed[];
+		const whatsappUser = users.find((user) => user.id === created.body.user.id);
+		expect(whatsappUser).toMatchObject({
+			signupMethod: "whatsapp",
+			phone: details.phone,
+			phoneVerified: true,
+		});
+		expect(users.find((user) => user.id === emailOnlyId)).toMatchObject({
+			signupMethod: "email",
+			phone: null,
+			phoneVerified: false,
+		});
+
+		const { stats } = listing.body;
+		expect(stats.whatsappSignups).toBe(users.filter((u) => u.signupMethod === "whatsapp").length);
+		expect(stats.whatsappLinked).toBe(users.filter((u) => u.phone && u.phoneVerified).length);
+		expect(stats.whatsappSignups).toBeGreaterThanOrEqual(1);
+	});
+});

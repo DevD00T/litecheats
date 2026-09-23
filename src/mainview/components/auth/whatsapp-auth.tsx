@@ -109,6 +109,7 @@ export function WhatsAppCodeStep({
 	isSubmitting,
 	isResending,
 	submitLabel,
+	codeName = "code",
 	onSubmit,
 	onResend,
 	onChangeNumber,
@@ -118,6 +119,8 @@ export function WhatsAppCodeStep({
 	isSubmitting: boolean;
 	isResending: boolean;
 	submitLabel: string;
+	/** What the code is called in the copy, e.g. "link code". */
+	codeName?: string;
 	onSubmit: (code: string) => Promise<boolean>;
 	onResend: () => void;
 	onChangeNumber: () => void;
@@ -134,13 +137,13 @@ export function WhatsAppCodeStep({
 	return (
 		<div className="space-y-5">
 			<p className="text-sm text-muted-foreground">
-				We sent a {WHATSAPP_CODE_LENGTH}-digit code on WhatsApp to{" "}
+				We sent a {WHATSAPP_CODE_LENGTH}-digit {codeName} on WhatsApp to{" "}
 				<span className="font-medium text-foreground">{formatWhatsAppPhone(phone)}</span>.
 			</p>
 			<form className="grid gap-4" onSubmit={handleSubmit}>
 				<div className="grid gap-2">
 					<label htmlFor="whatsapp-code" className="text-sm font-medium">
-						WhatsApp code
+						WhatsApp {codeName}
 					</label>
 					<Input
 						id="whatsapp-code"

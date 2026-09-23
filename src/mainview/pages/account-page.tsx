@@ -1,4 +1,5 @@
 import { useAuth } from "@/components/auth/auth-provider";
+import { LinkWhatsAppCard } from "@/components/auth/link-whatsapp-card";
 import { formatWhatsAppPhone } from "@/components/auth/whatsapp-auth";
 import { SubscriptionCard } from "@/components/billing/subscription-card";
 import { AnimatedPage } from "@/components/layout/animated-page";
@@ -177,6 +178,7 @@ export function AccountPage() {
 						</CardContent>
 					</Card>
 				) : null}
+				{user && !(user.phone && user.phoneVerified) ? <LinkWhatsAppCard /> : null}
 				<SubscriptionCard />
 				<Card className="bg-background/90">
 					<CardHeader className="space-y-3">
