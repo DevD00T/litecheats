@@ -8,6 +8,7 @@ import { AUTH_API_PORT, AUTH_BASE_PATH } from "../shared/auth";
 import { DOWNLOADS_BASE_PATH } from "../shared/releases";
 import { RAZORPAY_WEBHOOK_BASE_PATH } from "../shared/billing";
 import { STATUS_BASE_PATH } from "../shared/status";
+import { WHATSAPP_WEBHOOK_BASE_PATH } from "../shared/whatsapp";
 import { startAuthServer } from "../src/bun/auth-server";
 import {
 	getTelegramWebhookHealthHandler,
@@ -120,6 +121,11 @@ app.onRequest(({ request }) => {
 
 	// Razorpay delivers webhooks here; the API server verifies the HMAC.
 	if (pathname.startsWith(`${RAZORPAY_WEBHOOK_BASE_PATH}/`)) {
+		return proxyAuthApi(request);
+	}
+
+	// The WhatsApp gateway delivers webhooks here; the API server verifies the HMAC.
+	if (pathname.startsWith(`${WHATSAPP_WEBHOOK_BASE_PATH}/`)) {
 		return proxyAuthApi(request);
 	}
 

@@ -50,9 +50,10 @@ export default defineConfig({
 		proxy: {
 			"/login": apiProxy("/login", ["POST"]),
 			"/downloads": apiProxy("/downloads"),
-			// These two are API-only prefixes, so they never collide with a page.
+			// These are API-only prefixes, so they never collide with a page.
 			"/api/status": { target: API_TARGET, changeOrigin: true },
 			"/api/razorpay": { target: API_TARGET, changeOrigin: true },
+			"/whatsapp": { target: API_TARGET, changeOrigin: true },
 		},
 	},
 });

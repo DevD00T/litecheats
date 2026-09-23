@@ -451,6 +451,105 @@ suite("telegram admins", () => {
 	});
 });
 
+suite("users with WhatsApp numbers", () => {
+	const randomPhone = () => `91${String(Math.floor(Math.random() * 1e10)).padStart(10, "0")}`;
+
+	test("a WhatsApp account has no password and is found by its number", async () => {
+		const phone = randomPhone();
+		const user = makeUser({ phone, phoneVerified: true, passwordHash: null });
+		await db.insertUser(user);
+
+		const found = await db.findUserByPhone(phone);
+		expect(found?._id).toBe(user._id);
+		expect(found?.passwordHash).toBeNull();
+		expect(found?.phoneVerified).toBe(true);
+		expect(await db.findUserByPhone(randomPhone())).toBeNull();
+	});
+
+	test("accounts without a number never collide, a shared number does", async () => {
+		// Stored as null by insertUser, and as missing on legacy documents.
+		await db.insertUser(makeUser());
+		await db.insertUser(makeUser());
+		const legacy = makeUser();
+		const { phone: _omit, ...withoutPhone } = legacy;
+		await (await db.getDb()).collection("users").insertOne(withoutPhone as never);
+
+		const phone = randomPhone();
+		await db.insertUser(makeUser({ phone }));
+		const error = await db.insertUser(makeUser({ phone })).then(
+			() => null,
+			(caught: unknown) => caught,
+		);
+		expect(db.uniqueConstraintColumn(error)).toBe("phone");
+	});
+
+	test("a number can be added to and removed from an existing account", async () => {
+		const user = makeUser();
+		await db.insertUser(user);
+		const phone = randomPhone();
+		await db.updateUserFields(user._id, { phone, phoneVerified: true });
+		expect((await db.findUserByPhone(phone))?._id).toBe(user._id);
+
+		await db.updateUserFields(user._id, { phone: null, phoneVerified: false });
+		expect(await db.findUserByPhone(phone)).toBeNull();
+	});
+});
+
+suite("WhatsApp OTP challenges", () => {
+	const phone = () => `91${String(Math.floor(Math.random() * 1e10)).padStart(10, "0")}`;
+
+	test("one live challenge per number, replaced on resend", async () => {
+		const number = phone();
+		const expiresAt = new Date(Date.now() + minutes(10));
+		await db.upsertWhatsAppOtpChallenge({ phone: number, purpose: "signup", expiresAt });
+		const created = await db.findWhatsAppOtpChallenge(number);
+		expect(created?.purpose).toBe("signup");
+		expect(created?.attempts).toBe(0);
+
+		await db.claimWhatsAppOtpAttempt(number, 5);
+		await db.upsertWhatsAppOtpChallenge({ phone: number, purpose: "login", expiresAt });
+		const replaced = await db.findWhatsAppOtpChallenge(number);
+		expect(replaced?.purpose).toBe("login");
+		expect(replaced?.attempts).toBe(0);
+		expect(replaced?.createdAt.getTime()).toBe(created?.createdAt.getTime());
+
+		await db.deleteWhatsAppOtpChallenge(number);
+		expect(await db.findWhatsAppOtpChallenge(number)).toBeNull();
+	});
+
+	test("concurrent guesses can never claim more than the limit", async () => {
+		const number = phone();
+		await db.upsertWhatsAppOtpChallenge({
+			phone: number,
+			purpose: "login",
+			expiresAt: new Date(Date.now() + minutes(10)),
+		});
+
+		const claims = await Promise.all(
+			Array.from({ length: 12 }, () => db.claimWhatsAppOtpAttempt(number, 5)),
+		);
+		expect(claims.filter(Boolean)).toHaveLength(5);
+		expect((await db.findWhatsAppOtpChallenge(number))?.attempts).toBe(5);
+
+		await db.releaseWhatsAppOtpAttempt(number);
+		expect((await db.findWhatsAppOtpChallenge(number))?.attempts).toBe(4);
+		expect(await db.claimWhatsAppOtpAttempt(number, 5)).not.toBeNull();
+		expect(await db.claimWhatsAppOtpAttempt(number, 5)).toBeNull();
+	});
+
+	test("releasing never takes the count below zero, and a missing number claims nothing", async () => {
+		const number = phone();
+		await db.upsertWhatsAppOtpChallenge({
+			phone: number,
+			purpose: "login",
+			expiresAt: new Date(Date.now() + minutes(10)),
+		});
+		await db.releaseWhatsAppOtpAttempt(number);
+		expect((await db.findWhatsAppOtpChallenge(number))?.attempts).toBe(0);
+		expect(await db.claimWhatsAppOtpAttempt(phone(), 5)).toBeNull();
+	});
+});
+
 suite("email verification", () => {
 	test("tokens", async () => {
 		const token = uid();

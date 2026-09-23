@@ -30,6 +30,13 @@ import {
 	type UserRole,
 	type VerifyEmailPayload,
 	type VerifyEmailResponse,
+	WHATSAPP_CODE_LENGTH,
+	type WhatsAppCodeSentResponse,
+	type WhatsAppLoginStartPayload,
+	type WhatsAppLoginVerifyPayload,
+	type WhatsAppOtpPurpose,
+	type WhatsAppSignupStartPayload,
+	type WhatsAppSignupVerifyPayload,
 } from "../../shared/auth";
 import {
 	BILLING_ADMIN_BASE_PATH,
@@ -60,6 +67,11 @@ import {
 	type StatusSummaryResponse,
 } from "../../shared/status";
 import {
+	type AdminWhatsAppEventsResponse,
+	WHATSAPP_WEBHOOK_BASE_PATH,
+	WHATSAPP_WEBHOOK_PATH,
+} from "../../shared/whatsapp";
+import {
 	BillingError,
 	adminCreateSubscription,
 	adminDeleteSubscription,
@@ -85,6 +97,11 @@ import {
 	type SessionDocument,
 	type UserDocument,
 	type WithId,
+	WHATSAPP_EVENT_RETENTION_DAYS,
+	claimWhatsAppOtpAttempt,
+	countWhatsAppWebhookEventsByName,
+	findLatestWhatsAppWebhookEvent,
+	listWhatsAppWebhookEvents,
 	countActiveSessionsForDevice,
 	countActiveSessionsForUser,
 	deleteAllSessionsForUser as dbDeleteAllSessionsForUserId,
@@ -100,6 +117,7 @@ import {
 	deleteSessionByIdForUser,
 	deleteUserById,
 	deleteWalletDataForUser,
+	deleteWhatsAppOtpChallenge,
 	findAnyLatestRelease,
 	findArtifactBlobById,
 	findArtifactByLookup,
@@ -111,6 +129,8 @@ import {
 	findSessionById,
 	findUserByEmailLower,
 	findUserById,
+	findUserByPhone,
+	findWhatsAppOtpChallenge,
 	getDb,
 	incrementEmailVerificationAttempts,
 	insertArtifact,
@@ -121,6 +141,7 @@ import {
 	listAllUsersSortedByCreatedDesc,
 	listArtifactMetaByReleaseIds,
 	listReleasesSortedByPublishedDesc,
+	releaseWhatsAppOtpAttempt,
 	setReleaseLatest,
 	touchSession,
 	uniqueConstraintColumn,
@@ -130,6 +151,7 @@ import {
 	updateReleaseFields,
 	updateUserFields,
 	upsertEmailVerificationCode,
+	upsertWhatsAppOtpChallenge,
 } from "./db";
 import { sendVerificationCodeEmail } from "./email";
 import {
@@ -148,6 +170,15 @@ import {
 	startRenewalSweep,
 	verifyWalletTopup,
 } from "./wallet";
+import { getWhatsAppOtpClient, normalizeWhatsAppPhone } from "./whatsapp-otp";
+import {
+	WHATSAPP_WEBHOOK_MAX_BYTES,
+	WhatsAppWebhookError,
+	handleWhatsAppWebhook,
+	isWhatsAppWebhookConfigured,
+	toWhatsAppConnectionState,
+	toWhatsAppEventSummary,
+} from "./whatsapp-webhook";
 
 const ONE_DAY_MS = AUTH_COOKIE_MAX_AGE_SECONDS * 1000;
 const SESSION_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
@@ -183,6 +214,15 @@ const EMAIL_VERIFICATION_CODE_TTL_MS = Number(Bun.env.AUTH_VERIFY_CODE_TTL_MS ??
 const EMAIL_VERIFICATION_MAX_ATTEMPTS = 5;
 /** Minimum gap between code emails, so resend cannot be used to spam an inbox. */
 const EMAIL_VERIFICATION_RESEND_COOLDOWN_MS = 60 * 1000;
+/** Per-IP cap on WhatsApp code requests, which each cost a message. */
+const AUTH_WHATSAPP_SEND_RATE_LIMIT = Number(Bun.env.AUTH_WHATSAPP_SEND_RATE_LIMIT ?? 5);
+const AUTH_WHATSAPP_VERIFY_RATE_LIMIT = Number(Bun.env.AUTH_WHATSAPP_VERIFY_RATE_LIMIT ?? 10);
+/** How long we accept a WhatsApp code after sending it, whatever the gateway allows. */
+const WHATSAPP_CODE_TTL_MS = Number(Bun.env.WHATSAPP_OTP_TTL_MS ?? 10 * 60 * 1000);
+/** Wrong guesses allowed per sent code before a new one is required. */
+const WHATSAPP_MAX_ATTEMPTS = 5;
+/** Minimum gap between codes to one number, so it cannot be used to spam someone. */
+const WHATSAPP_RESEND_COOLDOWN_MS = 60 * 1000;
 /**
  * Origins this app is legitimately served from, e.g. the .com and .in domains.
  * A request's own Host/Origin header is attacker-controlled, so it is only ever
@@ -439,6 +479,9 @@ function toAuthUser(user: WithId<UserDocument>): AuthUser {
 		isAdmin,
 		isOwner,
 		emailVerified: sanitizeRoleFlag(user.emailVerified),
+		phone: typeof user.phone === "string" ? user.phone : null,
+		phoneVerified: sanitizeRoleFlag(user.phoneVerified),
+		hasPassword: typeof user.passwordHash === "string" && user.passwordHash.length > 0,
 		roles,
 		createdAt: user.createdAt.toISOString(),
 		updatedAt: user.updatedAt.toISOString(),
@@ -668,6 +711,58 @@ function parseVerifyEmailPayload(payload: unknown): VerifyEmailPayload {
 	}
 
 	return { code };
+}
+
+function parseWhatsAppPhone(value: unknown): string {
+	const phone = normalizeWhatsAppPhone(String(value ?? ""));
+	if (!phone) {
+		throw new HttpError(
+			400,
+			"Enter your WhatsApp number with its country code, for example +91 98765 43210.",
+		);
+	}
+	return phone;
+}
+
+function parseWhatsAppCode(value: unknown): string {
+	// Same forgiveness as the email code: pasted spaces and dashes are dropped.
+	const code = String(value ?? "").replace(/\D/g, "");
+	if (code.length !== WHATSAPP_CODE_LENGTH) {
+		throw new HttpError(400, `Enter the ${WHATSAPP_CODE_LENGTH}-digit code sent to your WhatsApp.`);
+	}
+	return code;
+}
+
+function asPayloadObject(payload: unknown, label: string): Record<string, unknown> {
+	if (!payload || typeof payload !== "object") {
+		throw new HttpError(400, `Invalid ${label} payload.`);
+	}
+	return payload as Record<string, unknown>;
+}
+
+function parseWhatsAppLoginStartPayload(payload: unknown): WhatsAppLoginStartPayload {
+	const body = asPayloadObject(payload, "WhatsApp sign-in");
+	return { phone: parseWhatsAppPhone(body.phone) };
+}
+
+function parseWhatsAppLoginVerifyPayload(payload: unknown): WhatsAppLoginVerifyPayload {
+	const body = asPayloadObject(payload, "WhatsApp sign-in");
+	return { phone: parseWhatsAppPhone(body.phone), code: parseWhatsAppCode(body.code) };
+}
+
+function parseWhatsAppSignupStartPayload(payload: unknown): WhatsAppSignupStartPayload {
+	const body = asPayloadObject(payload, "WhatsApp signup");
+	const fullName = normalizeBoundedText(body.fullName, "fullName", FULL_NAME_MAX_LENGTH) ?? "";
+	const company = normalizeBoundedText(body.company, "company", COMPANY_MAX_LENGTH) ?? "";
+	const email = normalizeBoundedText(body.email, "email", EMAIL_MAX_LENGTH) ?? "";
+	assertValidEmail(email);
+	return { phone: parseWhatsAppPhone(body.phone), fullName, company, email };
+}
+
+function parseWhatsAppSignupVerifyPayload(payload: unknown): WhatsAppSignupVerifyPayload {
+	const details = parseWhatsAppSignupStartPayload(payload);
+	const body = payload as Record<string, unknown>;
+	return { ...details, code: parseWhatsAppCode(body.code) };
 }
 
 function parseUpdatePayload(payload: unknown): UpdateProfilePayload {
@@ -1287,22 +1382,34 @@ async function buildDownloadResponse(request: Request, artifactId: string): Prom
 	});
 }
 
-async function createUser(payload: SignupPayload): Promise<WithId<UserDocument>> {
+interface NewSelfServiceUser {
+	fullName: string;
+	email: string;
+	company: string;
+	/** Null for a WhatsApp account, which signs in with a code instead. */
+	passwordHash: string | null;
+	/** Set, already verified, for an account opened through WhatsApp. */
+	verifiedPhone?: string;
+}
+
+/** Inserts an ordinary (non-admin) account opened by its owner. */
+async function insertSelfServiceUser(fields: NewSelfServiceUser): Promise<WithId<UserDocument>> {
 	await getDb();
 	const now = new Date();
-	const passwordHash = await Bun.password.hash(payload.password);
 
 	const user: UserDocument = {
 		_id: createUuidV7(),
-		email: payload.email.trim(),
-		emailLower: normalizeEmail(payload.email),
-		fullName: payload.fullName.trim(),
-		company: payload.company.trim(),
+		email: fields.email.trim(),
+		emailLower: normalizeEmail(fields.email),
+		fullName: fields.fullName.trim(),
+		company: fields.company.trim(),
 		isAdmin: false,
 		isOwner: false,
 		emailVerified: false,
 		roles: [DEFAULT_USER_ROLE],
-		passwordHash,
+		phone: fields.verifiedPhone ?? null,
+		phoneVerified: Boolean(fields.verifiedPhone),
+		passwordHash: fields.passwordHash,
 		createdAt: now,
 		updatedAt: now,
 	};
@@ -1311,12 +1418,27 @@ async function createUser(payload: SignupPayload): Promise<WithId<UserDocument>>
 		await insertUser(user);
 	} catch (error) {
 		if (isUniqueConstraintError(error)) {
+			if (uniqueConstraintColumn(error) === "phone") {
+				throw new HttpError(
+					409,
+					"An account already uses this WhatsApp number. Sign in with WhatsApp instead.",
+				);
+			}
 			throw new HttpError(409, "An account with this email already exists.");
 		}
 		throw error;
 	}
 
 	return user;
+}
+
+async function createUser(payload: SignupPayload): Promise<WithId<UserDocument>> {
+	return insertSelfServiceUser({
+		fullName: payload.fullName,
+		email: payload.email,
+		company: payload.company,
+		passwordHash: await Bun.password.hash(payload.password),
+	});
 }
 
 /**
@@ -1713,6 +1835,15 @@ async function handleLogin(request: Request): Promise<Response> {
 		throw new HttpError(401, "Invalid email or password.");
 	}
 
+	// Signup already tells anyone whether an email is registered, so saying how
+	// this account signs in leaks nothing new and saves a confused user.
+	if (!user.passwordHash) {
+		throw new HttpError(
+			401,
+			"This account signs in with WhatsApp. Choose WhatsApp and enter your number.",
+		);
+	}
+
 	const verified = await Bun.password.verify(payload.password, user.passwordHash);
 	if (!verified) {
 		throw new HttpError(401, "Invalid email or password.");
@@ -1827,6 +1958,227 @@ async function handleResendVerification(request: Request): Promise<Response> {
 		retryAfterSeconds: Math.round(EMAIL_VERIFICATION_RESEND_COOLDOWN_MS / 1000),
 	};
 	return jsonResponse(request, 200, response);
+}
+
+const WHATSAPP_UNAVAILABLE_MESSAGE =
+	"WhatsApp sign-in is unavailable right now. Please try again shortly, or use email.";
+const WHATSAPP_THROTTLED_MESSAGE =
+	"Too many WhatsApp codes for this number. Please wait a few minutes and try again.";
+
+function assertWhatsAppConfigured(): void {
+	if (!getWhatsAppOtpClient().configured) {
+		console.error("[auth] WhatsApp sign-in was used but WHATSAPP_OTP_API_URL / _KEY are not set.");
+		throw new HttpError(503, WHATSAPP_UNAVAILABLE_MESSAGE);
+	}
+}
+
+/**
+ * Asks the gateway to message a code to `phone`, and records the send so the
+ * verify step can bound guesses. Refuses while the last code to this number is
+ * still inside its resend cooldown.
+ */
+async function sendWhatsAppCode(
+	phone: string,
+	purpose: WhatsAppOtpPurpose,
+): Promise<WhatsAppCodeSentResponse> {
+	await getDb();
+	const existing = await findWhatsAppOtpChallenge(phone);
+	if (existing) {
+		const elapsed = Date.now() - existing.lastSentAt.getTime();
+		if (elapsed < WHATSAPP_RESEND_COOLDOWN_MS) {
+			const wait = Math.ceil((WHATSAPP_RESEND_COOLDOWN_MS - elapsed) / 1000);
+			throw new HttpError(
+				429,
+				`Wait ${wait} more second${wait === 1 ? "" : "s"} before requesting another code.`,
+			);
+		}
+	}
+
+	const result = await getWhatsAppOtpClient().sendCode(phone);
+	if (!result.ok) {
+		console.error(`[auth] WhatsApp code send failed (${result.reason}): ${result.detail}`);
+		if (result.reason === "rate_limited") throw new HttpError(429, WHATSAPP_THROTTLED_MESSAGE);
+		if (result.reason === "rejected") {
+			throw new HttpError(
+				400,
+				"We could not send a WhatsApp message to that number. Check it is correct and uses WhatsApp.",
+			);
+		}
+		throw new HttpError(503, WHATSAPP_UNAVAILABLE_MESSAGE);
+	}
+
+	await upsertWhatsAppOtpChallenge({
+		phone,
+		purpose,
+		expiresAt: new Date(Date.now() + WHATSAPP_CODE_TTL_MS),
+	});
+
+	return {
+		sent: true,
+		phone,
+		retryAfterSeconds: Math.round(WHATSAPP_RESEND_COOLDOWN_MS / 1000),
+		expiresInSeconds: Math.round(WHATSAPP_CODE_TTL_MS / 1000),
+	};
+}
+
+/**
+ * Checks `code` for `phone` and burns the challenge on success. Throws with a
+ * user-facing message otherwise. The guess is claimed before the gateway is
+ * asked, so parallel requests cannot exceed WHATSAPP_MAX_ATTEMPTS between them.
+ */
+async function consumeWhatsAppCode(
+	phone: string,
+	code: string,
+	purpose: WhatsAppOtpPurpose,
+): Promise<void> {
+	await getDb();
+	const challenge = await findWhatsAppOtpChallenge(phone);
+	// A code sent for signup must not open an existing account, or the reverse.
+	if (!challenge || challenge.purpose !== purpose) {
+		throw new HttpError(400, "Request a new code to continue.");
+	}
+
+	if (challenge.expiresAt.getTime() <= Date.now()) {
+		await deleteWhatsAppOtpChallenge(phone);
+		throw new HttpError(400, "That code has expired. Request a new one.");
+	}
+
+	const claimed = await claimWhatsAppOtpAttempt(phone, WHATSAPP_MAX_ATTEMPTS);
+	if (!claimed) {
+		await deleteWhatsAppOtpChallenge(phone);
+		throw new HttpError(429, "Too many incorrect codes. Request a new one.");
+	}
+
+	const result = await getWhatsAppOtpClient().verifyCode(phone, code);
+	if (result.ok) {
+		await deleteWhatsAppOtpChallenge(phone);
+		return;
+	}
+
+	console.warn(`[auth] WhatsApp code check failed (${result.reason}): ${result.detail}`);
+	if (result.reason === "unavailable") {
+		// The gateway never judged this guess, so it should not count against the user.
+		await releaseWhatsAppOtpAttempt(phone);
+		throw new HttpError(503, WHATSAPP_UNAVAILABLE_MESSAGE);
+	}
+	if (result.reason === "rate_limited") {
+		throw new HttpError(429, WHATSAPP_THROTTLED_MESSAGE);
+	}
+
+	const remaining = Math.max(0, WHATSAPP_MAX_ATTEMPTS - claimed.attempts);
+	if (remaining === 0) {
+		await deleteWhatsAppOtpChallenge(phone);
+		throw new HttpError(429, "Too many incorrect codes. Request a new one.");
+	}
+	throw new HttpError(
+		400,
+		`That code is not correct or has expired. ${remaining} attempt${remaining === 1 ? "" : "s"} left.`,
+	);
+}
+
+const WHATSAPP_NO_ACCOUNT_MESSAGE =
+	"No account uses this WhatsApp number yet. Create an account with it first.";
+
+async function handleWhatsAppLoginStart(request: Request): Promise<Response> {
+	assertWithinRateLimit(request, "whatsapp:send", AUTH_WHATSAPP_SEND_RATE_LIMIT);
+	const { phone } = parseWhatsAppLoginStartPayload(await readRequestJson(request));
+	assertWhatsAppConfigured();
+
+	// Checked before sending: a message costs money and lands on a real phone,
+	// so we only send one to a number that can actually sign in.
+	await getDb();
+	if (!(await findUserByPhone(phone))) {
+		throw new HttpError(404, WHATSAPP_NO_ACCOUNT_MESSAGE);
+	}
+
+	return jsonResponse(request, 200, await sendWhatsAppCode(phone, "login"));
+}
+
+async function handleWhatsAppLogin(request: Request): Promise<Response> {
+	assertWithinRateLimit(request, "whatsapp:verify", AUTH_WHATSAPP_VERIFY_RATE_LIMIT);
+	const { phone, code } = parseWhatsAppLoginVerifyPayload(await readRequestJson(request));
+	assertWhatsAppConfigured();
+
+	await getDb();
+	const user = await findUserByPhone(phone);
+	if (!user) {
+		throw new HttpError(404, WHATSAPP_NO_ACCOUNT_MESSAGE);
+	}
+
+	await consumeWhatsAppCode(phone, code, "login");
+
+	const session = await createSession(user._id, getSessionRequestMeta(request));
+	if (!sanitizeRoleFlag(user.phoneVerified)) {
+		await updateUserFields(user._id, { phoneVerified: true, updatedAt: new Date() });
+		user.phoneVerified = true;
+	}
+	await rememberAppOrigin(request, user);
+
+	return jsonResponse(request, 200, buildAuthSuccessResponse(user), {
+		"Set-Cookie": createSessionCookie(session._id, request),
+	});
+}
+
+/** Refuses a signup whose email or number is already taken, before any code is spent. */
+async function assertWhatsAppSignupAvailable(details: WhatsAppSignupStartPayload): Promise<void> {
+	await getDb();
+	if (await findUserByPhone(details.phone)) {
+		throw new HttpError(
+			409,
+			"An account already uses this WhatsApp number. Sign in with WhatsApp instead.",
+		);
+	}
+	if (await findUserByEmail(details.email)) {
+		throw new HttpError(409, "An account with this email already exists. Sign in instead.");
+	}
+}
+
+async function handleWhatsAppSignupStart(request: Request): Promise<Response> {
+	assertWithinRateLimit(request, "whatsapp:send", AUTH_WHATSAPP_SEND_RATE_LIMIT);
+	const details = parseWhatsAppSignupStartPayload(await readRequestJson(request));
+	assertWhatsAppConfigured();
+	await assertWhatsAppSignupAvailable(details);
+
+	return jsonResponse(request, 200, await sendWhatsAppCode(details.phone, "signup"));
+}
+
+async function handleWhatsAppSignup(request: Request): Promise<Response> {
+	assertWithinRateLimit(request, "whatsapp:verify", AUTH_WHATSAPP_VERIFY_RATE_LIMIT);
+	const payload = parseWhatsAppSignupVerifyPayload(await readRequestJson(request));
+	assertWhatsAppConfigured();
+	await assertWhatsAppSignupAvailable(payload);
+
+	await consumeWhatsAppCode(payload.phone, payload.code, "signup");
+
+	// The unique indexes still guard against a signup racing this one between
+	// the availability check and here; that surfaces as the same 409.
+	const user = await insertSelfServiceUser({
+		fullName: payload.fullName,
+		email: payload.email,
+		company: payload.company,
+		passwordHash: null,
+		verifiedPhone: payload.phone,
+	});
+
+	const signupOrigin = resolveRequestAppOrigin(request);
+	if (signupOrigin) {
+		await updateUserFields(user._id, { preferredOrigin: signupOrigin, updatedAt: new Date() });
+		user.preferredOrigin = signupOrigin;
+	}
+
+	// The number is proven; the email is not yet. Receipts and renewal notices
+	// go to it, so send the usual email code too. It is optional and does not
+	// hold up signing in, exactly as for a password signup.
+	const emailCode = await issueVerificationCode(user);
+	void deliverVerificationCode(user, emailCode).catch((error) => {
+		console.error("[auth] Failed to send signup verification email:", error);
+	});
+
+	const session = await createSession(user._id, getSessionRequestMeta(request));
+
+	return jsonResponse(request, 201, buildAuthSuccessResponse(user), {
+		"Set-Cookie": createSessionCookie(session._id, request),
+	});
 }
 
 async function handleSession(request: Request): Promise<Response> {
@@ -2244,6 +2596,61 @@ async function handleRazorpayWebhookRequest(request: Request): Promise<Response>
 	return jsonResponse(request, 200, { received: true, event: result.event });
 }
 
+async function handleWhatsAppWebhookRequest(request: Request): Promise<Response> {
+	const contentLength = Number(request.headers.get("content-length") ?? "0");
+	if (Number.isFinite(contentLength) && contentLength > WHATSAPP_WEBHOOK_MAX_BYTES) {
+		throw new HttpError(413, "Webhook payload is too large.");
+	}
+
+	const rawBody = await request.text();
+	// Content-Length can be absent (chunked), so the real size is checked too.
+	if (rawBody.length > WHATSAPP_WEBHOOK_MAX_BYTES) {
+		throw new HttpError(413, "Webhook payload is too large.");
+	}
+
+	const result = await handleWhatsAppWebhook(rawBody, request.headers.get("x-webhook-signature"));
+	if (!result.stored) {
+		console.log(`[whatsapp] Ignored duplicate webhook delivery: ${result.event}`);
+	}
+	return jsonResponse(request, 200, { received: true, event: result.event });
+}
+
+const ADMIN_WHATSAPP_EVENTS_DEFAULT_LIMIT = 50;
+const ADMIN_WHATSAPP_EVENTS_MAX_LIMIT = 200;
+
+async function handleAdminListWhatsAppEvents(request: Request, url: URL): Promise<Response> {
+	assertWithinRateLimit(request, "admin:whatsapp-events", AUTH_SESSION_RATE_LIMIT);
+	await requirePrivilegedSession(request);
+
+	const event = url.searchParams.get("event")?.trim() || undefined;
+	const limitParam = Number(url.searchParams.get("limit") ?? ADMIN_WHATSAPP_EVENTS_DEFAULT_LIMIT);
+	const limit = Number.isFinite(limitParam)
+		? Math.min(Math.max(Math.trunc(limitParam), 1), ADMIN_WHATSAPP_EVENTS_MAX_LIMIT)
+		: ADMIN_WHATSAPP_EVENTS_DEFAULT_LIMIT;
+	const beforeParam = url.searchParams.get("before");
+	const before = beforeParam ? new Date(beforeParam) : undefined;
+	if (before && Number.isNaN(before.getTime())) {
+		throw new HttpError(400, "before must be an ISO date.");
+	}
+
+	await getDb();
+	const [events, counts, latestConnection] = await Promise.all([
+		listWhatsAppWebhookEvents({ event, before, limit }),
+		countWhatsAppWebhookEventsByName(),
+		findLatestWhatsAppWebhookEvent("connection.update"),
+	]);
+
+	const response: AdminWhatsAppEventsResponse = {
+		events: events.map(toWhatsAppEventSummary),
+		counts,
+		connection: toWhatsAppConnectionState(latestConnection),
+		webhookConfigured: isWhatsAppWebhookConfigured(),
+		webhookPath: WHATSAPP_WEBHOOK_PATH,
+		retentionDays: WHATSAPP_EVENT_RETENTION_DAYS,
+	};
+	return jsonResponse(request, 200, response);
+}
+
 async function handleBillingOrders(request: Request): Promise<Response> {
 	assertWithinRateLimit(request, "billing:orders", AUTH_SESSION_RATE_LIMIT);
 	const session = await requireBillingSession(request);
@@ -2473,8 +2880,23 @@ async function routeRequest(request: Request): Promise<Response> {
 		return routeRazorpayRequest(request, url);
 	}
 
+	// The WhatsApp gateway also posts server to server, authenticated by HMAC.
+	if (url.pathname.startsWith(`${WHATSAPP_WEBHOOK_BASE_PATH}/`)) {
+		if (url.pathname !== WHATSAPP_WEBHOOK_PATH) {
+			return jsonResponse(request, 404, buildErrorResponse("Not Found"));
+		}
+		if (request.method !== "POST") {
+			return jsonResponse(request, 405, buildErrorResponse("Method Not Allowed"));
+		}
+		return handleWhatsAppWebhookRequest(request);
+	}
+
 	if (!url.pathname.startsWith(AUTH_BASE_PATH)) {
 		return jsonResponse(request, 404, buildErrorResponse("Not Found"));
+	}
+
+	if (request.method === "GET" && url.pathname === `${AUTH_ADMIN_BASE_PATH}/whatsapp/events`) {
+		return handleAdminListWhatsAppEvents(request, url);
 	}
 
 	if (url.pathname.startsWith(BILLING_BASE_PATH)) {
@@ -2575,6 +2997,22 @@ async function routeRequest(request: Request): Promise<Response> {
 		return handleSignup(request);
 	}
 
+	if (request.method === "POST" && url.pathname === `${AUTH_BASE_PATH}/signup/whatsapp/send`) {
+		return handleWhatsAppSignupStart(request);
+	}
+
+	if (request.method === "POST" && url.pathname === `${AUTH_BASE_PATH}/signup/whatsapp`) {
+		return handleWhatsAppSignup(request);
+	}
+
+	if (request.method === "POST" && url.pathname === `${AUTH_BASE_PATH}/whatsapp/send`) {
+		return handleWhatsAppLoginStart(request);
+	}
+
+	if (request.method === "POST" && url.pathname === `${AUTH_BASE_PATH}/whatsapp`) {
+		return handleWhatsAppLogin(request);
+	}
+
 	if (request.method === "POST" && url.pathname === `${AUTH_BASE_PATH}/verify-email`) {
 		return handleVerifyEmail(request);
 	}
@@ -2635,7 +3073,11 @@ async function handleRequestWithErrorBoundary(request: Request): Promise<Respons
 	try {
 		return await routeRequest(request);
 	} catch (error) {
-		if (error instanceof HttpError || error instanceof BillingError) {
+		if (
+			error instanceof HttpError ||
+			error instanceof BillingError ||
+			error instanceof WhatsAppWebhookError
+		) {
 			return jsonResponse(request, error.status, buildErrorResponse(error.message));
 		}
 
@@ -2662,6 +3104,19 @@ export async function startAuthServer() {
 	);
 
 	startRenewalSweep();
+
+	if (isWhatsAppWebhookConfigured()) {
+		console.log(`[whatsapp] Webhook ready at ${WHATSAPP_WEBHOOK_PATH}.`);
+	} else {
+		console.warn(
+			`[whatsapp] WHATSAPP_WEBHOOK_SECRET is not set — deliveries to ${WHATSAPP_WEBHOOK_PATH} will be rejected.`,
+		);
+	}
+	if (!getWhatsAppOtpClient().configured) {
+		console.warn(
+			"[whatsapp] WHATSAPP_OTP_API_URL / WHATSAPP_OTP_API_KEY are not set — WhatsApp sign-in is disabled.",
+		);
+	}
 
 	if (!isRazorpayConfigured()) {
 		console.warn(

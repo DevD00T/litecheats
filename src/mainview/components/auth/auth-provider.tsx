@@ -8,7 +8,14 @@ import {
 	useMemo,
 	useReducer,
 } from "react";
-import type { AuthUser, LoginPayload, SignupPayload, UpdateProfilePayload } from "shared/auth";
+import type {
+	AuthUser,
+	LoginPayload,
+	SignupPayload,
+	UpdateProfilePayload,
+	WhatsAppLoginVerifyPayload,
+	WhatsAppSignupVerifyPayload,
+} from "shared/auth";
 
 type AuthStatus = "loading" | "authenticated" | "anonymous";
 const AUTH_SYNC_STORAGE_KEY = "litecheats-auth-sync";
@@ -43,6 +50,8 @@ interface AuthContextValue {
 	refreshSession: (options?: { withLoading?: boolean }) => Promise<void>;
 	login: (payload: LoginPayload) => Promise<AuthUser>;
 	signup: (payload: SignupPayload) => Promise<AuthUser>;
+	loginWithWhatsApp: (payload: WhatsAppLoginVerifyPayload) => Promise<AuthUser>;
+	signupWithWhatsApp: (payload: WhatsAppSignupVerifyPayload) => Promise<AuthUser>;
 	logout: () => Promise<void>;
 	updateProfile: (payload: UpdateProfilePayload) => Promise<AuthUser>;
 	deleteAccount: () => Promise<void>;
@@ -91,6 +100,20 @@ export function AuthProvider({ children }: PropsWithChildren) {
 
 	const signup = useCallback(async (payload: SignupPayload) => {
 		const response = await authApi.signup(payload);
+		dispatch({ type: "AUTHENTICATED", user: response.user });
+		broadcastAuthSync();
+		return response.user;
+	}, []);
+
+	const loginWithWhatsApp = useCallback(async (payload: WhatsAppLoginVerifyPayload) => {
+		const response = await authApi.loginWithWhatsApp(payload);
+		dispatch({ type: "AUTHENTICATED", user: response.user });
+		broadcastAuthSync();
+		return response.user;
+	}, []);
+
+	const signupWithWhatsApp = useCallback(async (payload: WhatsAppSignupVerifyPayload) => {
+		const response = await authApi.signupWithWhatsApp(payload);
 		dispatch({ type: "AUTHENTICATED", user: response.user });
 		broadcastAuthSync();
 		return response.user;
@@ -160,11 +183,23 @@ export function AuthProvider({ children }: PropsWithChildren) {
 			refreshSession,
 			login,
 			signup,
+			loginWithWhatsApp,
+			signupWithWhatsApp,
 			logout,
 			updateProfile,
 			deleteAccount,
 		}),
-		[state, refreshSession, login, signup, logout, updateProfile, deleteAccount],
+		[
+			state,
+			refreshSession,
+			login,
+			signup,
+			loginWithWhatsApp,
+			signupWithWhatsApp,
+			logout,
+			updateProfile,
+			deleteAccount,
+		],
 	);
 
 	return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

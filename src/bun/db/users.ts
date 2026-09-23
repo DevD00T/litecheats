@@ -13,6 +13,8 @@ export async function insertUser(user: WithId<UserDocument>): Promise<void> {
 		emailVerified: Boolean(user.emailVerified),
 		roles: user.roles ?? [DEFAULT_USER_ROLE],
 		preferredOrigin: user.preferredOrigin ?? null,
+		phone: user.phone ?? null,
+		phoneVerified: Boolean(user.phoneVerified),
 	});
 }
 
@@ -20,6 +22,11 @@ export async function findUserByEmailLower(
 	emailLower: string,
 ): Promise<WithId<UserDocument> | null> {
 	return (await users()).findOne({ emailLower });
+}
+
+/** `phone` must already be normalised: digits only, country code first. */
+export async function findUserByPhone(phone: string): Promise<WithId<UserDocument> | null> {
+	return (await users()).findOne({ phone });
 }
 
 export async function findUserById(id: string): Promise<WithId<UserDocument> | null> {
@@ -40,6 +47,8 @@ export async function updateUserFields(id: string, patch: Partial<UserDocument>)
 	if (patch.isOwner !== undefined) set.isOwner = Boolean(patch.isOwner);
 	if (patch.emailVerified !== undefined) set.emailVerified = Boolean(patch.emailVerified);
 	if (patch.preferredOrigin !== undefined) set.preferredOrigin = patch.preferredOrigin ?? null;
+	if (patch.phone !== undefined) set.phone = patch.phone ?? null;
+	if (patch.phoneVerified !== undefined) set.phoneVerified = Boolean(patch.phoneVerified);
 	if (patch.passwordHash !== undefined) set.passwordHash = patch.passwordHash;
 	if (patch.roles !== undefined) set.roles = patch.roles;
 	if (patch.updatedAt !== undefined) set.updatedAt = patch.updatedAt;

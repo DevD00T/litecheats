@@ -16,6 +16,11 @@ export interface AuthUser {
 	isAdmin: boolean;
 	isOwner: boolean;
 	emailVerified: boolean;
+	/** WhatsApp number in international form without "+", e.g. "919876543210". */
+	phone: string | null;
+	phoneVerified: boolean;
+	/** False for accounts created through WhatsApp, which sign in with a code instead. */
+	hasPassword: boolean;
 	roles: UserRole[];
 	createdAt: string;
 	updatedAt: string;
@@ -128,4 +133,45 @@ export interface ResendVerificationResponse {
 	sent: true;
 	/** Seconds the caller must wait before another code can be requested. */
 	retryAfterSeconds: number;
+}
+
+/** Digits in the one-time code sent over WhatsApp. */
+export const WHATSAPP_CODE_LENGTH = 6;
+
+export const WHATSAPP_OTP_PURPOSES = ["login", "signup"] as const;
+export type WhatsAppOtpPurpose = (typeof WHATSAPP_OTP_PURPOSES)[number];
+
+/** Asks for a code to sign in to the account that owns this number. */
+export interface WhatsAppLoginStartPayload {
+	phone: string;
+}
+
+export interface WhatsAppLoginVerifyPayload {
+	phone: string;
+	code: string;
+}
+
+/**
+ * Asks for a code to open a new account. The profile is sent up front so it can
+ * be checked (email free, number free) before a message is spent on it.
+ */
+export interface WhatsAppSignupStartPayload {
+	phone: string;
+	fullName: string;
+	company: string;
+	email: string;
+}
+
+export interface WhatsAppSignupVerifyPayload extends WhatsAppSignupStartPayload {
+	code: string;
+}
+
+export interface WhatsAppCodeSentResponse {
+	sent: true;
+	/** The number the code went to, normalised, e.g. "919876543210". */
+	phone: string;
+	/** Seconds the caller must wait before another code can be requested. */
+	retryAfterSeconds: number;
+	/** Seconds the code stays usable on our side. */
+	expiresInSeconds: number;
 }

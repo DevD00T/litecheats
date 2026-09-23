@@ -1,4 +1,4 @@
-import type { UserRole } from "../../../shared/auth";
+import type { UserRole, WhatsAppOtpPurpose } from "../../../shared/auth";
 import type {
 	BillingCycle,
 	BillingMode,
@@ -28,9 +28,40 @@ export interface UserDocument {
 	emailVerified?: unknown;
 	/** Validated app origin this account last signed in from, or null. */
 	preferredOrigin?: string | null;
-	passwordHash: string;
+	/** WhatsApp number, digits only with country code (e.g. "919876543210"), or null. */
+	phone?: string | null;
+	phoneVerified?: unknown;
+	/** Null for accounts created through WhatsApp: they have no password to check. */
+	passwordHash: string | null;
 	createdAt: Date;
 	updatedAt: Date;
+}
+
+/**
+ * One delivery from the WhatsApp gateway's webhook, kept as sent. `_id` is the
+ * SHA-256 of the raw body, so a redelivery of the same event is stored once.
+ */
+export interface WhatsAppWebhookEventDocument {
+	_id: string;
+	event: string;
+	sessionId: string | null;
+	occurredAt: Date | null;
+	receivedAt: Date;
+	data: unknown;
+}
+
+/**
+ * A WhatsApp code we asked the provider to send. The provider holds the code
+ * itself; this record is what lets us bound guesses and resends per number, and
+ * refuse a verify for a number we never sent to. `_id` in storage is the phone.
+ */
+export interface WhatsAppOtpChallengeRecord {
+	phone: string;
+	purpose: WhatsAppOtpPurpose;
+	attempts: number;
+	lastSentAt: Date;
+	expiresAt: Date;
+	createdAt: Date;
 }
 
 /** Legacy click-through verification link. `_id` in storage is the token. */

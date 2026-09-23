@@ -18,6 +18,11 @@ import {
 	type UpdateProfilePayload,
 	type VerifyEmailPayload,
 	type VerifyEmailResponse,
+	type WhatsAppCodeSentResponse,
+	type WhatsAppLoginStartPayload,
+	type WhatsAppLoginVerifyPayload,
+	type WhatsAppSignupStartPayload,
+	type WhatsAppSignupVerifyPayload,
 } from "shared/auth";
 import type {
 	AdminCreateReleasePayload,
@@ -29,6 +34,7 @@ import type {
 	ReleaseFormat,
 	ReleasePlatform,
 } from "shared/releases";
+import type { AdminWhatsAppEventsResponse } from "shared/whatsapp";
 
 function resolveAuthApiOrigin(): string {
 	if (typeof window !== "undefined") {
@@ -108,6 +114,26 @@ export const authApi = {
 			method: "POST",
 			body: JSON.stringify(payload),
 		}),
+	sendWhatsAppLoginCode: (payload: WhatsAppLoginStartPayload) =>
+		authRequest<WhatsAppCodeSentResponse>("/whatsapp/send", {
+			method: "POST",
+			body: JSON.stringify(payload),
+		}),
+	loginWithWhatsApp: (payload: WhatsAppLoginVerifyPayload) =>
+		authRequest<AuthSuccessResponse>("/whatsapp", {
+			method: "POST",
+			body: JSON.stringify(payload),
+		}),
+	sendWhatsAppSignupCode: (payload: WhatsAppSignupStartPayload) =>
+		authRequest<WhatsAppCodeSentResponse>("/signup/whatsapp/send", {
+			method: "POST",
+			body: JSON.stringify(payload),
+		}),
+	signupWithWhatsApp: (payload: WhatsAppSignupVerifyPayload) =>
+		authRequest<AuthSuccessResponse>("/signup/whatsapp", {
+			method: "POST",
+			body: JSON.stringify(payload),
+		}),
 	logout: () =>
 		authRequest<null>("/logout", {
 			method: "POST",
@@ -160,6 +186,16 @@ export const authApi = {
 		authRequest<AdminDeleteUserResponse>(`/admin/users/${encodeURIComponent(userId)}`, {
 			method: "DELETE",
 		}),
+	getAdminWhatsAppEvents: (params: { event?: string; before?: string; limit?: number } = {}) => {
+		const query = new URLSearchParams();
+		if (params.event) query.set("event", params.event);
+		if (params.before) query.set("before", params.before);
+		if (params.limit) query.set("limit", String(params.limit));
+		const suffix = query.size ? `?${query}` : "";
+		return authRequest<AdminWhatsAppEventsResponse>(`/admin/whatsapp/events${suffix}`, {
+			method: "GET",
+		});
+	},
 	getAdminReleases: () =>
 		authRequest<ReleaseFeedResponse>("/admin/releases", {
 			method: "GET",

@@ -8,7 +8,8 @@
  *   schema.ts             collections, $jsonSchema validators and indexes
  *   seed.ts               first-boot owner account
  *   users.ts, sessions.ts, email-verification.ts, releases.ts,
- *   telegram-admins.ts, billing.ts, wallet.ts   one repository per area
+ *   telegram-admins.ts, billing.ts, wallet.ts,
+ *   whatsapp-otp.ts, whatsapp-events.ts   one repository per area
  *
  * Every function is async and connects lazily, so no caller needs to initialise
  * the database first.
@@ -23,3 +24,5 @@ export * from "./telegram-admins";
 export * from "./types";
 export * from "./users";
 export * from "./wallet";
+export * from "./whatsapp-events";
+export * from "./whatsapp-otp";

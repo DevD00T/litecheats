@@ -1,4 +1,5 @@
 import { useAuth } from "@/components/auth/auth-provider";
+import { formatWhatsAppPhone } from "@/components/auth/whatsapp-auth";
 import { SubscriptionCard } from "@/components/billing/subscription-card";
 import { AnimatedPage } from "@/components/layout/animated-page";
 import { Badge } from "@/components/ui/badge";
@@ -202,6 +203,17 @@ export function AccountPage() {
 									</Badge>
 								)}
 							</div>
+							{user?.phone ? (
+								<div className="mt-2 flex flex-wrap items-center gap-2">
+									<p className="text-muted-foreground">WhatsApp</p>
+									<p className="font-medium text-foreground">{formatWhatsAppPhone(user.phone)}</p>
+									{user.phoneVerified ? (
+										<Badge variant="secondary" className="bg-success/12 text-success">
+											Verified
+										</Badge>
+									) : null}
+								</div>
+							) : null}
 						</div>
 						<div className="grid gap-3 rounded-lg border border-border/65 bg-muted/25 p-4 text-sm">
 							<div className="space-y-2">

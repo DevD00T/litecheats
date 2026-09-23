@@ -1,5 +1,5 @@
 import type { CreateCollectionOptions, Db, Document, IndexDescription } from "mongodb";
-import { USER_ROLES } from "../../../shared/auth";
+import { USER_ROLES, WHATSAPP_OTP_PURPOSES } from "../../../shared/auth";
 import {
 	BILLING_CYCLES,
 	BILLING_PLAN_IDS,
@@ -17,6 +17,8 @@ export const COLLECTIONS = {
 	sessions: "sessions",
 	emailVerifications: "email_verifications",
 	emailVerificationCodes: "email_verification_codes",
+	whatsappOtpChallenges: "whatsapp_otp_challenges",
+	whatsappWebhookEvents: "whatsapp_webhook_events",
 	releaseVersions: "release_versions",
 	releaseArtifacts: "release_artifacts",
 	telegramAdmins: "telegram_admins",
@@ -50,6 +52,13 @@ const VERIFICATION_GRACE_SECONDS = DAY_SECONDS;
  * any retry window while keeping the idempotency table from growing forever.
  */
 const WEBHOOK_EVENT_TTL_SECONDS = 30 * DAY_SECONDS;
+
+/**
+ * WhatsApp events carry message text and phone numbers, so they are kept only
+ * as long as they are useful for looking into a problem. Changing this later
+ * needs a collMod on the index: createIndexes refuses to alter a TTL in place.
+ */
+export const WHATSAPP_EVENT_RETENTION_DAYS = 30;
 
 // ---------------------------------------------------------------------------
 // JSON Schema building blocks
@@ -119,7 +128,10 @@ export const COLLECTION_DEFINITIONS: CollectionDefinition[] = [
 				isOwner: boolean,
 				emailVerified: boolean,
 				preferredOrigin: nullableString,
-				passwordHash: string,
+				phone: nullableString,
+				phoneVerified: boolean,
+				// Null for WhatsApp-only accounts, which have no password.
+				passwordHash: nullableString,
 				createdAt: date,
 				updatedAt: date,
 			},
@@ -127,6 +139,33 @@ export const COLLECTION_DEFINITIONS: CollectionDefinition[] = [
 		indexes: [
 			{ key: { emailLower: 1 }, name: "emailLower_unique", unique: true },
 			{ key: { createdAt: -1 }, name: "createdAt_desc" },
+			// One account per WhatsApp number. Partial, so the many accounts with
+			// no number (null or missing) never collide with each other.
+			{
+				key: { phone: 1 },
+				name: "phone_unique",
+				unique: true,
+				partialFilterExpression: { phone: { $type: "string" } },
+			},
+		],
+	},
+	{
+		// `_id` is the phone number: one live WhatsApp code per number, and a
+		// resend replaces it.
+		name: COLLECTIONS.whatsappOtpChallenges,
+		schema: objectSchema(["purpose", "attempts", "lastSentAt", "expiresAt", "createdAt"], {
+			purpose: enumOf(WHATSAPP_OTP_PURPOSES),
+			attempts: { bsonType: "number", minimum: 0 },
+			lastSentAt: date,
+			expiresAt: date,
+			createdAt: date,
+		}),
+		indexes: [
+			{
+				key: { expiresAt: 1 },
+				name: "expiry_ttl",
+				expireAfterSeconds: VERIFICATION_GRACE_SECONDS,
+			},
 		],
 	},
 	{
@@ -181,6 +220,25 @@ export const COLLECTION_DEFINITIONS: CollectionDefinition[] = [
 				key: { expiresAt: 1 },
 				name: "expiry_ttl",
 				expireAfterSeconds: VERIFICATION_GRACE_SECONDS,
+			},
+		],
+	},
+	{
+		// `_id` is the SHA-256 of the raw delivery, so a redelivery is one insert that fails.
+		// `data` is whatever the gateway sent and is deliberately not constrained.
+		name: COLLECTIONS.whatsappWebhookEvents,
+		schema: objectSchema(["event", "receivedAt"], {
+			event: string,
+			sessionId: nullableString,
+			occurredAt: nullableDate,
+			receivedAt: date,
+		}),
+		indexes: [
+			{ key: { event: 1, receivedAt: -1 }, name: "event_receivedAt" },
+			{
+				key: { receivedAt: 1 },
+				name: "receivedAt_ttl",
+				expireAfterSeconds: WHATSAPP_EVENT_RETENTION_DAYS * DAY_SECONDS,
 			},
 		],
 	},

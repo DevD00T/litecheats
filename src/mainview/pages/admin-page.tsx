@@ -1,4 +1,5 @@
 import { SubscriptionManagementSection } from "@/components/admin/subscription-management-section";
+import { WhatsAppEventsSection } from "@/components/admin/whatsapp-events-section";
 import { useAuth } from "@/components/auth/auth-provider";
 import { AnimatedPage } from "@/components/layout/animated-page";
 import { Badge } from "@/components/ui/badge";
@@ -776,6 +777,7 @@ const ADMIN_TABS = [
 	{ key: "users", label: "Users" },
 	{ key: "subscriptions", label: "Subscriptions" },
 	{ key: "releases", label: "Releases" },
+	{ key: "whatsapp", label: "WhatsApp" },
 ] as const;
 
 type AdminTabKey = (typeof ADMIN_TABS)[number]["key"];
@@ -1032,6 +1034,7 @@ export function AdminPage() {
 
 				{activeTab === "subscriptions" ? <SubscriptionManagementSection users={users} /> : null}
 				{activeTab === "releases" ? <ReleaseManagementSection /> : null}
+				{activeTab === "whatsapp" ? <WhatsAppEventsSection /> : null}
 				{activeTab === "users" ? (
 					<>
 						<Card className="bg-background/90">

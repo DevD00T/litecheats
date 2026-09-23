@@ -1,12 +1,21 @@
 import { useAuth } from "@/components/auth/auth-provider";
+import {
+	type AuthMethod,
+	AuthMethodToggle,
+	WhatsAppCodeStep,
+	WhatsAppPhoneField,
+	useCountdown,
+} from "@/components/auth/whatsapp-auth";
 import { AnimatedPage } from "@/components/layout/animated-page";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
+import { authApi } from "@/lib/auth-api";
 import { type FormEvent, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
+import type { WhatsAppSignupStartPayload } from "shared/auth";
 import { toast } from "sonner";
 
 function useRedirectPath(defaultPath: string): string {
@@ -50,11 +59,29 @@ function isStrongPassword(password: string): boolean {
 
 export function SignupPage() {
 	const navigate = useNavigate();
-	const { signup } = useAuth();
+	const location = useLocation();
+	const { signup, signupWithWhatsApp } = useAuth();
 	const redirectTo = useRedirectPath("/account");
+	const searchParams = new URLSearchParams(location.search);
+	const [method, setMethod] = useState<AuthMethod>(
+		searchParams.get("method") === "whatsapp" ? "whatsapp" : "email",
+	);
 	const [isSubmitting, setIsSubmitting] = useState(false);
 	const [password, setPassword] = useState("");
 	const passwordStrength = useMemo(() => evaluatePasswordStrength(password), [password]);
+
+	// WhatsApp flow: the profile is kept here once a code has been sent for it,
+	// because the server takes it again, with the code, to create the account.
+	const [pending, setPending] = useState<WhatsAppSignupStartPayload | null>(null);
+	const [draft, setDraft] = useState<WhatsAppSignupStartPayload>({
+		fullName: "",
+		company: "",
+		email: "",
+		phone: searchParams.get("phone") ?? "",
+	});
+	const [isResending, setIsResending] = useState(false);
+	const [resendCooldown, startResendCooldown] = useCountdown();
+	const loginLink = `/login?redirect=${encodeURIComponent(redirectTo)}`;
 
 	const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
 		event.preventDefault();
@@ -91,6 +118,67 @@ export function SignupPage() {
 		}
 	};
 
+	const requestWhatsAppCode = async (details: WhatsAppSignupStartPayload) => {
+		try {
+			const response = await authApi.sendWhatsAppSignupCode(details);
+			setPending({ ...details, phone: response.phone });
+			startResendCooldown(response.retryAfterSeconds);
+			toast.success("Code sent. Check WhatsApp.");
+		} catch (error) {
+			toast.error(error instanceof Error ? error.message : "Could not send a code.");
+		}
+	};
+
+	const handleWhatsAppStart = async (event: FormEvent<HTMLFormElement>) => {
+		event.preventDefault();
+		const formData = new FormData(event.currentTarget);
+		const details: WhatsAppSignupStartPayload = {
+			fullName: String(formData.get("fullName") ?? "").trim(),
+			company: String(formData.get("company") ?? "").trim(),
+			email: String(formData.get("email") ?? "").trim(),
+			phone: String(formData.get("phone") ?? "").trim(),
+		};
+
+		if (!details.fullName || !details.company || !details.email || !details.phone) {
+			toast.error("Please complete all registration fields.");
+			return;
+		}
+
+		setDraft(details);
+		setIsSubmitting(true);
+		try {
+			await requestWhatsAppCode(details);
+		} finally {
+			setIsSubmitting(false);
+		}
+	};
+
+	const handleWhatsAppResend = async () => {
+		if (!pending) return;
+		setIsResending(true);
+		try {
+			await requestWhatsAppCode(pending);
+		} finally {
+			setIsResending(false);
+		}
+	};
+
+	const handleWhatsAppVerify = async (code: string): Promise<boolean> => {
+		if (!pending) return false;
+		setIsSubmitting(true);
+		try {
+			await signupWithWhatsApp({ ...pending, code });
+			toast.success("Account created. We also emailed a code so you can confirm your email.");
+			navigate(redirectTo, { replace: true });
+			return true;
+		} catch (error) {
+			toast.error(error instanceof Error ? error.message : "Unable to create account.");
+			return false;
+		} finally {
+			setIsSubmitting(false);
+		}
+	};
+
 	return (
 		<AnimatedPage>
 			<section className="mx-auto w-full max-w-xl">
@@ -104,68 +192,123 @@ export function SignupPage() {
 							Create an account to manage your fleet, billing, and downloads.
 						</CardDescription>
 					</CardHeader>
-					<CardContent>
-						<form className="grid gap-4" onSubmit={handleSubmit}>
-							<div className="grid gap-2">
-								<label htmlFor="fullName" className="text-sm font-medium">
-									Full Name
-								</label>
-								<Input id="fullName" name="fullName" placeholder="Jane Doe" required />
-							</div>
-							<div className="grid gap-2">
-								<label htmlFor="company" className="text-sm font-medium">
-									Company
-								</label>
-								<Input id="company" name="company" placeholder="Acme Robotics" required />
-							</div>
-							<div className="grid gap-2">
-								<label htmlFor="email" className="text-sm font-medium">
-									Email
-								</label>
-								<Input
-									id="email"
-									name="email"
-									type="email"
-									placeholder="you@company.com"
-									required
-								/>
-							</div>
-							<div className="grid gap-2">
-								<label htmlFor="password" className="text-sm font-medium">
-									Password
-								</label>
-								<Input
-									id="password"
-									name="password"
-									type="password"
-									value={password}
-									onChange={(event) => setPassword(event.target.value)}
-									required
-								/>
+					<CardContent className="grid gap-5">
+						<AuthMethodToggle
+							value={method}
+							onChange={setMethod}
+							disabled={isSubmitting || isResending}
+						/>
+
+						{method === "whatsapp" && pending ? (
+							<WhatsAppCodeStep
+								phone={pending.phone}
+								resendCooldown={resendCooldown}
+								isSubmitting={isSubmitting}
+								isResending={isResending}
+								submitLabel="Create Account"
+								onSubmit={handleWhatsAppVerify}
+								onResend={() => void handleWhatsAppResend()}
+								onChangeNumber={() => setPending(null)}
+							/>
+						) : (
+							<form
+								// Remount per method so each form starts from its own defaults.
+								key={method}
+								className="grid gap-4"
+								onSubmit={method === "email" ? handleSubmit : handleWhatsAppStart}
+							>
 								<div className="grid gap-2">
-									<div className="flex items-center justify-between text-xs text-muted-foreground">
-										<span>Password strength</span>
-										<span>{passwordStrength.label}</span>
-									</div>
-									<Progress value={passwordStrength.score} className="h-2 w-full" />
-									<p className="text-xs text-muted-foreground">
-										Use letters, numbers, and symbols for a stronger password.
-									</p>
+									<label htmlFor="fullName" className="text-sm font-medium">
+										Full Name
+									</label>
+									<Input
+										id="fullName"
+										name="fullName"
+										placeholder="Jane Doe"
+										defaultValue={method === "whatsapp" ? draft.fullName : undefined}
+										required
+									/>
 								</div>
-							</div>
-							<Button type="submit" disabled={isSubmitting}>
-								{isSubmitting ? "Creating account..." : "Create Account"}
-							</Button>
-							<p className="text-sm text-muted-foreground">
-								Already registered?{" "}
-								<Link
-									to={`/login?redirect=${encodeURIComponent(redirectTo)}`}
-									className="font-medium text-primary hover:underline"
-								>
-									Sign in
-								</Link>
-							</p>
-						</form>
+								<div className="grid gap-2">
+									<label htmlFor="company" className="text-sm font-medium">
+										Company
+									</label>
+									<Input
+										id="company"
+										name="company"
+										placeholder="Acme Robotics"
+										defaultValue={method === "whatsapp" ? draft.company : undefined}
+										required
+									/>
+								</div>
+								<div className="grid gap-2">
+									<label htmlFor="email" className="text-sm font-medium">
+										Email
+									</label>
+									<Input
+										id="email"
+										name="email"
+										type="email"
+										placeholder="you@company.com"
+										defaultValue={method === "whatsapp" ? draft.email : undefined}
+										required
+									/>
+									{method === "whatsapp" ? (
+										<p className="text-xs text-muted-foreground">
+											Receipts and renewal reminders are sent here.
+										</p>
+									) : null}
+								</div>
+
+								{method === "email" ? (
+									<div className="grid gap-2">
+										<label htmlFor="password" className="text-sm font-medium">
+											Password
+										</label>
+										<Input
+											id="password"
+											name="password"
+											type="password"
+											value={password}
+											onChange={(event) => setPassword(event.target.value)}
+											required
+										/>
+										<div className="grid gap-2">
+											<div className="flex items-center justify-between text-xs text-muted-foreground">
+												<span>Password strength</span>
+												<span>{passwordStrength.label}</span>
+											</div>
+											<Progress value={passwordStrength.score} className="h-2 w-full" />
+											<p className="text-xs text-muted-foreground">
+												Use letters, numbers, and symbols for a stronger password.
+											</p>
+										</div>
+									</div>
+								) : (
+									<WhatsAppPhoneField defaultValue={draft.phone} />
+								)}
+
+								<Button type="submit" disabled={isSubmitting}>
+									{method === "email"
+										? isSubmitting
+											? "Creating account..."
+											: "Create Account"
+										: isSubmitting
+											? "Sending code..."
+											: "Send code on WhatsApp"}
+								</Button>
+							</form>
+						)}
+
+						<p className="text-sm text-muted-foreground">
+							Already registered?{" "}
+							<Link
+								to={method === "whatsapp" ? `${loginLink}&method=whatsapp` : loginLink}
+								className="font-medium text-primary hover:underline"
+							>
+								Sign in
+							</Link>
+						</p>
 					</CardContent>
 				</Card>
 			</section>
