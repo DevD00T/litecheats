@@ -1,4 +1,5 @@
 import { AuthProvider, useAuth } from "@/components/auth/auth-provider";
+import { AndroidAppPrompt } from "@/components/downloads/android-app-prompt";
 import { BackToTop } from "@/components/layout/back-to-top";
 import { ScrollToTop } from "@/components/layout/scroll-to-top";
 import { SiteFooter } from "@/components/layout/site-footer";
@@ -235,6 +236,7 @@ function AppShell({
 			<SessionRouteSync />
 			<ScrollToTop />
 			<SiteHeader themeMode={themeMode} onToggleTheme={onToggleTheme} />
+			<AndroidAppPrompt />
 			<AnimatedRoutes />
 			<SiteFooter />
 			<BackToTop />
