@@ -56,6 +56,11 @@ export async function listActiveSessionsForUser(
 		.toArray();
 }
 
+/** Moves a session to a new device binding (see resolveSessionUser). */
+export async function rebindSessionDevice(id: string, deviceKey: string): Promise<void> {
+	await (await sessions()).updateOne({ _id: id }, { $set: { deviceKey } });
+}
+
 export async function touchSession(
 	id: string,
 	patch: { updatedAt: Date; expiresAt: Date; ipAddress: string; userAgent: string },

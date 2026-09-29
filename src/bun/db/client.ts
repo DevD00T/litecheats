@@ -164,7 +164,76 @@ export async function pingDatabase(): Promise<number> {
 	return Math.round(performance.now() - startedAt);
 }
 
+const WATCHDOG_INTERVAL_MS = 30_000;
+const WATCHDOG_FAILURES_BEFORE_RECONNECT = 2;
+let watchdogTimer: ReturnType<typeof setInterval> | null = null;
+let watchdogFailures = 0;
+let reconnecting: Promise<void> | null = null;
+
+/**
+ * Drops the current client so the next query connects afresh. A long-lived
+ * client can get stuck on an old view of the replica set: after an Atlas
+ * election or maintenance it may reject the new primary ("primary marked stale
+ * due to electionId/setVersion mismatch") and fail every query until it is
+ * recreated. A new client reads the current topology and works again.
+ */
+export function reconnectDb(reason: string): Promise<void> {
+	if (reconnecting) return reconnecting;
+	console.warn(`[db] Reconnecting to MongoDB: ${reason}`);
+	const stale = client;
+	client = null;
+	database = null;
+	initPromise = null;
+	reconnecting = (async () => {
+		try {
+			await stale?.close(true);
+		} catch {
+			// The old client is being thrown away; a failed close changes nothing.
+		}
+		try {
+			await getDb();
+			console.log("[db] Reconnected to MongoDB.");
+		} catch (error) {
+			console.error("[db] Reconnect failed; the next query retries.", error);
+		}
+	})().finally(() => {
+		reconnecting = null;
+	});
+	return reconnecting;
+}
+
+/** Pings MongoDB every 30 seconds and reconnects after two failures in a row. */
+export function startDbWatchdog(): void {
+	if (watchdogTimer) return;
+	watchdogTimer = setInterval(() => {
+		if (reconnecting) return;
+		pingDatabase()
+			.then(() => {
+				watchdogFailures = 0;
+			})
+			.catch((error) => {
+				watchdogFailures += 1;
+				const message = error instanceof Error ? error.message : String(error);
+				console.warn(
+					`[db] Ping failed (${watchdogFailures}/${WATCHDOG_FAILURES_BEFORE_RECONNECT}): ${message}`,
+				);
+				if (watchdogFailures >= WATCHDOG_FAILURES_BEFORE_RECONNECT) {
+					watchdogFailures = 0;
+					void reconnectDb(message);
+				}
+			});
+	}, WATCHDOG_INTERVAL_MS);
+	watchdogTimer.unref?.();
+}
+
+export function stopDbWatchdog(): void {
+	if (!watchdogTimer) return;
+	clearInterval(watchdogTimer);
+	watchdogTimer = null;
+}
+
 export async function closeDb(): Promise<void> {
+	stopDbWatchdog();
 	const current = client;
 	client = null;
 	database = null;

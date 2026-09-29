@@ -1,0 +1,22 @@
+# Cloudflare Tunnel for the Litecheats droplet. setup-droplet.sh writes the real
+# deploy/cloudflared.yml from this file (it is git-ignored: it names your tunnel).
+#
+# The tunnel dials out to Cloudflare, so pwa.litecheats.cc keeps working without
+# open inbound ports, a public IP or a TLS certificate on the droplet.
+
+tunnel: TUNNEL_ID
+credentials-file: CREDENTIALS_FILE
+
+# Keep connections healthy on a small droplet.
+protocol: auto
+retries: 10
+grace-period: 20s
+
+ingress:
+  # Everything, app and API, goes to the Bun server (scripts/serve-dist.ts).
+  - hostname: pwa.litecheats.cc
+    service: http://localhost:8080
+    originRequest:
+      connectTimeout: 15s
+      keepAliveTimeout: 90s
+  - service: http_status:404

@@ -188,6 +188,10 @@ import {
 	findBillingSubscriptionById,
 	markAllNotificationsRead,
 	markNotificationRead,
+	pingDatabase,
+	rebindSessionDevice,
+	reconnectDb,
+	startDbWatchdog,
 } from "./db";
 import { sendVerificationCodeEmail } from "./email";
 import {
@@ -619,11 +623,42 @@ function extractClientIp(request: Request): string {
 }
 
 function buildDeviceKey(request: Request, userAgent: string): string {
+	// The Android app (1.7+) sends its install id. Its User-Agent carries the app
+	// and Android versions, so binding to that would sign people out on every
+	// update. A separate header from X-Litecheats-Device, which 1.6 already sent
+	// on inbox polls only: reusing it would end those sessions on the next poll.
+	const appDeviceId = parseNotificationDeviceId(request.headers.get("x-litecheats-install"));
+	if (appDeviceId) {
+		return createHash("sha256").update(`litecheats-app|${appDeviceId}`).digest("hex");
+	}
+
 	const acceptLanguage = sanitizeHeaderValue(request.headers.get("accept-language"), "na", 128);
 	const clientPlatform = sanitizeHeaderValue(request.headers.get("sec-ch-ua-platform"), "na", 64);
 	const clientMobile = sanitizeHeaderValue(request.headers.get("sec-ch-ua-mobile"), "na", 16);
 	const material = `${userAgent.toLowerCase()}|${acceptLanguage}|${clientPlatform}|${clientMobile}`;
 	return createHash("sha256").update(material).digest("hex");
+}
+
+/** "(Android 15; Samsung SM-S918B)" -> "samsung sm-s918b" for Litecheats-Android User-Agents. */
+function androidPhoneModel(userAgent: string): string | null {
+	if (!userAgent.startsWith("Litecheats-Android/")) return null;
+	const details = userAgent.match(/\(Android [^;]*;\s*([^)]+)\)/);
+	return details?.[1]?.trim().toLowerCase() || null;
+}
+
+/**
+ * A session made by an Android app older than 1.7 was bound to its User-Agent,
+ * which changes with every app update. It may carry over to an install-id
+ * binding when the request comes from the app on the same phone model.
+ */
+function isSameAndroidPhone(
+	sessionUserAgent: string,
+	userAgent: string,
+	request: Request,
+): boolean {
+	if (!request.headers.get("x-litecheats-install")) return false;
+	const before = androidPhoneModel(sessionUserAgent);
+	return before !== null && before === androidPhoneModel(userAgent);
 }
 
 function getSessionRequestMeta(request: Request): SessionRequestMeta {
@@ -672,7 +707,10 @@ function createCorsHeaders(request: Request): Headers {
 
 	headers.set("Access-Control-Allow-Credentials", "true");
 	headers.set("Access-Control-Allow-Methods", "GET,HEAD,POST,PATCH,DELETE,OPTIONS");
-	headers.set("Access-Control-Allow-Headers", "Content-Type,Authorization");
+	headers.set(
+		"Access-Control-Allow-Headers",
+		"Content-Type,Authorization,X-Litecheats-Device,X-Litecheats-Install",
+	);
 	headers.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
 	headers.set("Pragma", "no-cache");
 	headers.set("Expires", "0");
@@ -1574,6 +1612,8 @@ function toAuthSession(session: WithId<SessionDocument>, currentSessionId: strin
 interface ResolvedSessionContext {
 	user: WithId<UserDocument>;
 	session: WithId<SessionDocument>;
+	/** True when this request extended the session, so the cookie should be re-sent. */
+	refreshed?: boolean;
 }
 
 async function createSession(
@@ -1662,8 +1702,14 @@ async function resolveSessionUser(request: Request): Promise<ResolvedSessionCont
 	}
 
 	if (session.deviceKey !== requestMeta.deviceKey) {
-		await deleteSessionById(session._id);
-		return null;
+		if (!isSameAndroidPhone(session.userAgent, requestMeta.userAgent, request)) {
+			await deleteSessionById(session._id);
+			return null;
+		}
+		// Signed in with an older Android app (bound to its User-Agent) on this
+		// same phone: keep the session and bind it to the install id from now on.
+		await rebindSessionDevice(session._id, requestMeta.deviceKey);
+		session.deviceKey = requestMeta.deviceKey;
 	}
 
 	const user = await findUserById(session.userId);
@@ -1684,6 +1730,7 @@ async function resolveSessionUser(request: Request): Promise<ResolvedSessionCont
 		session.expiresAt = refreshed.expiresAt ?? session.expiresAt;
 		session.userAgent = refreshed.userAgent ?? session.userAgent;
 		session.ipAddress = refreshed.ipAddress ?? session.ipAddress;
+		return { user, session, refreshed: true };
 	}
 
 	return { user, session };
@@ -2344,7 +2391,12 @@ async function handleWhatsAppSignup(request: Request): Promise<Response> {
 async function handleSession(request: Request): Promise<Response> {
 	assertWithinRateLimit(request, "session", AUTH_SESSION_RATE_LIMIT);
 	const session = await resolveSessionUser(request);
-	return jsonResponse(request, 200, buildSessionResponse(session?.user ?? null));
+	// The session was just extended in the database; extend the cookie with it,
+	// or it would still expire a day after sign-in however active the user is.
+	const extraHeaders = session?.refreshed
+		? { "Set-Cookie": createSessionCookie(session.session._id, request) }
+		: undefined;
+	return jsonResponse(request, 200, buildSessionResponse(session?.user ?? null), extraHeaders);
 }
 
 async function handleGetMe(request: Request): Promise<Response> {
@@ -3228,9 +3280,45 @@ async function routeRazorpayRequest(request: Request, url: URL): Promise<Respons
 	return jsonResponse(request, 404, buildErrorResponse("Razorpay resource not found."));
 }
 
+const PROCESS_STARTED_AT = Date.now();
+
+/**
+ * Liveness plus a database round-trip, for the pm2 bridge and uptime monitors.
+ * 503 when MongoDB is unreachable, so a watchdog can tell "up but broken" apart.
+ */
+async function handleStatusHealth(request: Request): Promise<Response> {
+	const uptimeSeconds = Math.round((Date.now() - PROCESS_STARTED_AT) / 1000);
+	try {
+		const dbLatencyMs = await Promise.race([
+			pingDatabase(),
+			new Promise<never>((_, reject) =>
+				setTimeout(() => reject(new Error("Database ping timed out.")), 5000),
+			),
+		]);
+		return jsonResponse(request, 200, {
+			ok: true,
+			db: { ok: true, latencyMs: dbLatencyMs },
+			uptimeSeconds,
+		});
+	} catch (error) {
+		const detail = error instanceof Error ? error.message : "Database unreachable.";
+		// Don't wait for the watchdog: a failed health check reconnects right away.
+		void reconnectDb(detail);
+		return jsonResponse(request, 503, {
+			ok: false,
+			db: { ok: false, error: detail },
+			uptimeSeconds,
+		});
+	}
+}
+
 async function routeStatusRequest(request: Request, url: URL): Promise<Response> {
 	if (request.method === "GET" && url.pathname === `${STATUS_BASE_PATH}/summary`) {
 		return handleStatusSummary(request);
+	}
+
+	if (request.method === "GET" && url.pathname === `${STATUS_BASE_PATH}/health`) {
+		return handleStatusHealth(request);
 	}
 
 	return jsonResponse(request, 404, buildErrorResponse("Status resource not found."));
@@ -3582,6 +3670,18 @@ async function handleRequestWithErrorBoundary(request: Request): Promise<Respons
 			return jsonResponse(request, error.status, buildErrorResponse(error.message));
 		}
 
+		// The database client could not reach a usable primary: reconnect now and
+		// answer 503 so apps retry instead of treating it as a real failure.
+		if (error instanceof Error && error.name === "MongoServerSelectionError") {
+			void reconnectDb(error.message);
+			return jsonResponse(
+				request,
+				503,
+				buildErrorResponse("Litecheats is reconnecting to its database. Try again in a moment."),
+				{ "Retry-After": "5" },
+			);
+		}
+
 		console.error("Unhandled auth API error:", error);
 		return jsonResponse(request, 500, buildErrorResponse("Internal server error."));
 	}
@@ -3605,6 +3705,7 @@ export async function startAuthServer() {
 	);
 
 	startRenewalSweep();
+	startDbWatchdog();
 
 	if (isWhatsAppWebhookConfigured()) {
 		console.log(`[whatsapp] Webhook ready at ${WHATSAPP_WEBHOOK_PATH}.`);

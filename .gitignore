@@ -17,3 +17,9 @@ data/
 
 # The native Android app lives in this folder locally but is not part of this repository.
 litecheats-sms-android/
+
+# Droplet deploy: the bridge builds into .dist-next and keeps the last build in
+# .dist-prev; cloudflared.yml names the tunnel on that machine.
+.dist-next/
+.dist-prev/
+deploy/cloudflared.yml
