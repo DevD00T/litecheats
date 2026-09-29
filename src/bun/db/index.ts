@@ -14,6 +14,7 @@
  * Every function is async and connects lazily, so no caller needs to initialise
  * the database first.
  */
+export * from "./android-releases";
 export * from "./billing";
 export * from "./client";
 export * from "./email-verification";

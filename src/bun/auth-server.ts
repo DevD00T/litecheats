@@ -1,6 +1,14 @@
 import { createHash } from "node:crypto";
 import { Elysia } from "elysia";
 import {
+	ANDROID_ADMIN_PATH,
+	ANDROID_APK_MIME_TYPE,
+	ANDROID_DOWNLOADS_PATH,
+	type AdminAndroidReleasesResponse,
+	type AdminDeleteAndroidReleaseResponse,
+	type AndroidLatestResponse,
+} from "../../shared/android";
+import {
 	AUTH_ADMIN_BASE_PATH,
 	AUTH_API_PORT,
 	AUTH_BASE_PATH,
@@ -22,8 +30,10 @@ import {
 	type ResendVerificationResponse,
 	type RevokeSessionPayload,
 	type RevokeSessionResponse,
+	SIGNUP_METHODS,
 	type SessionListResponse,
 	type SessionResponse,
+	type SignupMethod,
 	type SignupPayload,
 	USER_ROLES,
 	type UpdateProfilePayload,
@@ -32,12 +42,10 @@ import {
 	type VerifyEmailResponse,
 	WHATSAPP_CODE_LENGTH,
 	type WhatsAppCodeSentResponse,
-	type WhatsAppLoginStartPayload,
 	type WhatsAppLinkStartPayload,
 	type WhatsAppLinkVerifyPayload,
+	type WhatsAppLoginStartPayload,
 	type WhatsAppLoginVerifyPayload,
-	SIGNUP_METHODS,
-	type SignupMethod,
 	type WhatsAppOtpPurpose,
 	type WhatsAppSignupStartPayload,
 	type WhatsAppSignupVerifyPayload,
@@ -76,6 +84,13 @@ import {
 	WHATSAPP_WEBHOOK_PATH,
 } from "../../shared/whatsapp";
 import {
+	ANDROID_APP_ID,
+	ANDROID_KEEP_RELEASES,
+	AndroidReleaseError,
+	publishAndroidApk,
+	toAndroidReleaseSummary,
+} from "./android-releases";
+import {
 	BillingError,
 	adminCreateSubscription,
 	adminDeleteSubscription,
@@ -100,14 +115,12 @@ import {
 	type ReleaseVersionDocument,
 	type SessionDocument,
 	type UserDocument,
-	type WithId,
 	WHATSAPP_EVENT_RETENTION_DAYS,
+	type WithId,
 	claimWhatsAppOtpAttempt,
-	countWhatsAppWebhookEventsByName,
-	findLatestWhatsAppWebhookEvent,
-	listWhatsAppWebhookEvents,
 	countActiveSessionsForDevice,
 	countActiveSessionsForUser,
+	countWhatsAppWebhookEventsByName,
 	deleteAllSessionsForUser as dbDeleteAllSessionsForUserId,
 	deleteSessionsByUserId as dbDeleteSessionsByUserId,
 	listActiveSessionsForUser as dbListActiveSessionsForUser,
@@ -128,6 +141,7 @@ import {
 	findArtifactMetaById,
 	findConflictingArtifact,
 	findEmailVerificationCode,
+	findLatestWhatsAppWebhookEvent,
 	findMostRecentReleaseByPublishedDesc,
 	findReleaseById,
 	findSessionById,
@@ -145,6 +159,7 @@ import {
 	listAllUsersSortedByCreatedDesc,
 	listArtifactMetaByReleaseIds,
 	listReleasesSortedByPublishedDesc,
+	listWhatsAppWebhookEvents,
 	releaseWhatsAppOtpAttempt,
 	setReleaseLatest,
 	touchSession,
@@ -156,6 +171,13 @@ import {
 	updateUserFields,
 	upsertEmailVerificationCode,
 	upsertWhatsAppOtpChallenge,
+} from "./db";
+import {
+	deleteAndroidRelease,
+	findAndroidReleaseById,
+	findLatestAndroidRelease,
+	listAndroidReleases,
+	updateAndroidReleaseFields,
 } from "./db";
 import { sendVerificationCodeEmail } from "./email";
 import {
@@ -2496,6 +2518,107 @@ async function handleLatestRelease(request: Request): Promise<Response> {
 	});
 }
 
+// ---------------------------------------------------------------------------
+// Android update channel
+// ---------------------------------------------------------------------------
+
+async function handleAndroidLatest(request: Request): Promise<Response> {
+	await getDb();
+	const latest = await findLatestAndroidRelease();
+	const response: AndroidLatestResponse = {
+		latest: latest ? toAndroidReleaseSummary(latest) : null,
+	};
+	return jsonResponse(request, 200, response);
+}
+
+async function handleAndroidDownload(request: Request, releaseId: string): Promise<Response> {
+	await getDb();
+	const release = await findAndroidReleaseById(releaseId);
+	if (!release)
+		throw new HttpError(404, "This app version is no longer available. Check for updates again.");
+
+	const headers = createCorsHeaders(request);
+	headers.set("Content-Type", ANDROID_APK_MIME_TYPE);
+	headers.set(
+		"Content-Disposition",
+		`attachment; filename="${release.filename.replaceAll('"', "'")}"`,
+	);
+	headers.set("Content-Length", String(release.sizeBytes));
+	headers.set("X-Litecheats-Version-Code", String(release.versionCode));
+	headers.set("X-Litecheats-Sha256", release.sha256);
+	headers.set("Cache-Control", "public, max-age=300, immutable");
+	if (request.method === "HEAD") return new Response(null, { status: 200, headers });
+
+	const blob = await findArtifactBlobById(releaseId);
+	if (!blob) throw new HttpError(404, "APK file content not found.");
+	return new Response(blob, { status: 200, headers });
+}
+
+async function buildAdminAndroidResponse(): Promise<AdminAndroidReleasesResponse> {
+	await getDb();
+	return {
+		releases: (await listAndroidReleases()).map(toAndroidReleaseSummary),
+		packageName: ANDROID_APP_ID,
+		keepCount: ANDROID_KEEP_RELEASES,
+	};
+}
+
+async function handleAdminListAndroidReleases(request: Request): Promise<Response> {
+	assertWithinRateLimit(request, "admin:android:list", AUTH_SESSION_RATE_LIMIT);
+	await requirePrivilegedSession(request);
+	return jsonResponse(request, 200, await buildAdminAndroidResponse());
+}
+
+async function handleAdminPublishAndroidRelease(request: Request): Promise<Response> {
+	assertWithinRateLimit(request, "admin:android:create", AUTH_SESSION_RATE_LIMIT);
+	const session = await requirePrivilegedSession(request);
+	const formData = await readRequestFormData(request);
+	const file = formData.get("file");
+	if (!(file instanceof File)) throw new HttpError(400, "APK file is required.");
+	const notes = formData.get("notes");
+	const mandatory = String(formData.get("mandatory") ?? "").toLowerCase();
+	const result = await publishAndroidApk({
+		apk: new Uint8Array(await file.arrayBuffer()),
+		notes: typeof notes === "string" ? notes : "",
+		mandatory: mandatory === "true" || mandatory === "1" || mandatory === "on",
+	});
+	console.log(
+		`[android] ${session.user.email} published ${result.release.versionName} (${result.release.versionCode}), sha256 ${result.release.sha256}; removed ${result.removed.length} older version(s).`,
+	);
+	return jsonResponse(request, 201, await buildAdminAndroidResponse());
+}
+
+async function handleAdminUpdateAndroidRelease(
+	request: Request,
+	releaseId: string,
+): Promise<Response> {
+	assertWithinRateLimit(request, "admin:android:update", AUTH_SESSION_RATE_LIMIT);
+	await requirePrivilegedSession(request);
+	const body = (await readRequestJson(request)) as Record<string, unknown> | null;
+	if (!body || typeof body !== "object") throw new HttpError(400, "Invalid payload.");
+	await getDb();
+	if (!(await findAndroidReleaseById(releaseId)))
+		throw new HttpError(404, "Android release not found.");
+	const notes = typeof body.notes === "string" ? body.notes.trim().slice(0, 4000) : undefined;
+	const mandatory = typeof body.mandatory === "boolean" ? body.mandatory : undefined;
+	await updateAndroidReleaseFields(releaseId, { notes, mandatory, updatedAt: new Date() });
+	return jsonResponse(request, 200, await buildAdminAndroidResponse());
+}
+
+async function handleAdminDeleteAndroidRelease(
+	request: Request,
+	releaseId: string,
+): Promise<Response> {
+	assertWithinRateLimit(request, "admin:android:delete", AUTH_SESSION_RATE_LIMIT);
+	await requirePrivilegedSession(request);
+	await getDb();
+	if (!(await findAndroidReleaseById(releaseId)))
+		throw new HttpError(404, "Android release not found.");
+	await deleteAndroidRelease(releaseId);
+	const response: AdminDeleteAndroidReleaseResponse = { deleted: true };
+	return jsonResponse(request, 200, response);
+}
+
 interface StatusCheckResult {
 	status: StatusLevel;
 	latencyMs: number;
@@ -2930,6 +3053,17 @@ async function routeStatusRequest(request: Request, url: URL): Promise<Response>
 }
 
 async function routeDownloadsRequest(request: Request, url: URL): Promise<Response> {
+	if (request.method === "GET" && url.pathname === `${ANDROID_DOWNLOADS_PATH}/latest`) {
+		return handleAndroidLatest(request);
+	}
+
+	const androidFileMatch = url.pathname.match(
+		new RegExp(`^${ANDROID_DOWNLOADS_PATH}/([^/]+)/file$`),
+	);
+	if ((request.method === "GET" || request.method === "HEAD") && androidFileMatch) {
+		return handleAndroidDownload(request, decodeURIComponent(androidFileMatch[1] ?? ""));
+	}
+
 	if (request.method === "GET" && url.pathname === `${DOWNLOADS_BASE_PATH}/releases`) {
 		return handleReleasesFeed(request);
 	}
@@ -3011,6 +3145,19 @@ async function routeRequest(request: Request): Promise<Response> {
 
 	if (url.pathname.startsWith(BILLING_ADMIN_BASE_PATH)) {
 		return routeAdminBillingRequest(request, url);
+	}
+
+	if (url.pathname === ANDROID_ADMIN_PATH) {
+		if (request.method === "GET") return handleAdminListAndroidReleases(request);
+		if (request.method === "POST") return handleAdminPublishAndroidRelease(request);
+	}
+
+	const adminAndroidMatch = url.pathname.match(new RegExp(`^${ANDROID_ADMIN_PATH}/([^/]+)$`));
+	if (adminAndroidMatch && request.method === "PATCH") {
+		return handleAdminUpdateAndroidRelease(request, decodeURIComponent(adminAndroidMatch[1] ?? ""));
+	}
+	if (adminAndroidMatch && request.method === "DELETE") {
+		return handleAdminDeleteAndroidRelease(request, decodeURIComponent(adminAndroidMatch[1] ?? ""));
 	}
 
 	if (request.method === "GET" && url.pathname === `${AUTH_ADMIN_BASE_PATH}/releases`) {
@@ -3190,7 +3337,8 @@ async function handleRequestWithErrorBoundary(request: Request): Promise<Respons
 		if (
 			error instanceof HttpError ||
 			error instanceof BillingError ||
-			error instanceof WhatsAppWebhookError
+			error instanceof WhatsAppWebhookError ||
+			error instanceof AndroidReleaseError
 		) {
 			return jsonResponse(request, error.status, buildErrorResponse(error.message));
 		}

@@ -1,3 +1,8 @@
+import type {
+	AdminAndroidReleasesResponse,
+	AdminDeleteAndroidReleaseResponse,
+	AdminUpdateAndroidReleasePayload,
+} from "shared/android";
 import {
 	AUTH_API_PORT,
 	AUTH_BASE_PATH,
@@ -258,6 +263,28 @@ export const authApi = {
 			method: "PATCH",
 			body: JSON.stringify(payload),
 		}),
+	getAdminAndroidReleases: () =>
+		authRequest<AdminAndroidReleasesResponse>("/admin/android/releases", { method: "GET" }),
+	publishAdminAndroidRelease: (payload: { file: File; notes: string; mandatory: boolean }) => {
+		const formData = new FormData();
+		formData.set("file", payload.file);
+		formData.set("notes", payload.notes);
+		formData.set("mandatory", String(payload.mandatory));
+		return authRequest<AdminAndroidReleasesResponse>("/admin/android/releases", {
+			method: "POST",
+			body: formData,
+		});
+	},
+	updateAdminAndroidRelease: (releaseId: string, payload: AdminUpdateAndroidReleasePayload) =>
+		authRequest<AdminAndroidReleasesResponse>(
+			`/admin/android/releases/${encodeURIComponent(releaseId)}`,
+			{ method: "PATCH", body: JSON.stringify(payload) },
+		),
+	deleteAdminAndroidRelease: (releaseId: string) =>
+		authRequest<AdminDeleteAndroidReleaseResponse>(
+			`/admin/android/releases/${encodeURIComponent(releaseId)}`,
+			{ method: "DELETE" },
+		),
 	deleteAdminArtifact: (artifactId: string) =>
 		authRequest<AdminDeleteArtifactResponse>(`/admin/artifacts/${encodeURIComponent(artifactId)}`, {
 			method: "DELETE",

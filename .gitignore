@@ -14,3 +14,6 @@ data/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+
+# The native Android app lives in this folder locally but is not part of this repository.
+litecheats-sms-android/

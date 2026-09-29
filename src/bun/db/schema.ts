@@ -21,6 +21,7 @@ export const COLLECTIONS = {
 	whatsappWebhookEvents: "whatsapp_webhook_events",
 	releaseVersions: "release_versions",
 	releaseArtifacts: "release_artifacts",
+	androidReleases: "android_releases",
 	telegramAdmins: "telegram_admins",
 	billingSubscriptions: "billing_subscriptions",
 	billingPayments: "billing_payments",
@@ -300,6 +301,42 @@ export const COLLECTION_DEFINITIONS: CollectionDefinition[] = [
 				name: "release_platform_format_target",
 			},
 		],
+	},
+	{
+		// The Android update channel. Metadata only; the APK is in the release_files
+		// GridFS bucket under the same `_id`. versionCode is unique so two uploads can
+		// never claim the same build number.
+		name: COLLECTIONS.androidReleases,
+		schema: objectSchema(
+			[
+				"packageName",
+				"versionCode",
+				"versionName",
+				"sha256",
+				"sizeBytes",
+				"filename",
+				"notes",
+				"mandatory",
+				"publishedAt",
+				"createdAt",
+				"updatedAt",
+			],
+			{
+				packageName: string,
+				versionCode: { bsonType: ["int", "long", "double"], minimum: 1 },
+				versionName: string,
+				minSdkVersion: nullableNumber,
+				sha256: { bsonType: "string", pattern: "^[0-9a-f]{64}$" },
+				sizeBytes: nonNegative,
+				filename: string,
+				notes: string,
+				mandatory: boolean,
+				publishedAt: date,
+				createdAt: date,
+				updatedAt: date,
+			},
+		),
+		indexes: [{ key: { versionCode: -1 }, name: "versionCode_unique", unique: true }],
 	},
 	{
 		name: COLLECTIONS.telegramAdmins,

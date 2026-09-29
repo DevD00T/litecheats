@@ -6,6 +6,7 @@ import { releasesApi } from "@/lib/releases-api";
 import { cn } from "@/lib/utils";
 import { gsap } from "gsap";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { AndroidReleaseSummary } from "shared/android";
 import type { ReleaseArtifactSummary, ReleaseFeedResponse, ReleasePlatform } from "shared/releases";
 import { toast } from "sonner";
 
@@ -54,6 +55,15 @@ export function DownloadsPage() {
 	const [feed, setFeed] = useState<ReleaseFeedResponse | null>(null);
 	const [isLoading, setIsLoading] = useState(true);
 	const [errorMessage, setErrorMessage] = useState<string | null>(null);
+	const [android, setAndroid] = useState<AndroidReleaseSummary | null>(null);
+
+	useEffect(() => {
+		// The Android card is optional: a failure here must not hide the desktop builds.
+		void releasesApi
+			.getAndroidLatest()
+			.then((response) => setAndroid(response.latest))
+			.catch(() => setAndroid(null));
+	}, []);
 
 	useLayoutEffect(() => {
 		if (!scopeRef.current) return;
@@ -138,6 +148,39 @@ export function DownloadsPage() {
 						platform to install or upgrade.
 					</p>
 				</div>
+
+				{android ? (
+					<Card className="downloads-card border-success/35 bg-background/85">
+						<CardHeader>
+							<CardTitle className="font-heading text-2xl">
+								Android app: {android.versionName}
+							</CardTitle>
+							<CardDescription>
+								versionCode {android.versionCode} · {formatFileSize(android.sizeBytes)} · published{" "}
+								{formatPublishedDate(android.publishedAt)} IST · Android 9 or newer
+							</CardDescription>
+						</CardHeader>
+						<CardContent className="space-y-3">
+							{android.notes ? (
+								<p className="rounded-md border border-border/60 bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+									{android.notes}
+								</p>
+							) : null}
+							<p className="break-all font-code text-xs text-muted-foreground">
+								SHA-256 {android.sha256}
+							</p>
+							<a
+								href={releasesApi.getDownloadUrl(android.downloadPath)}
+								className={cn(buttonVariants({ size: "sm" }), "inline-flex")}
+							>
+								Download APK
+							</a>
+							<p className="text-xs text-muted-foreground">
+								Once installed, the app keeps itself up to date from this server.
+							</p>
+						</CardContent>
+					</Card>
+				) : null}
 
 				{isLoading ? (
 					<Card className="downloads-card">

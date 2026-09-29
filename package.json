@@ -19,6 +19,7 @@
     "build:dmg": "bun litecheats/scripts/create-dmg.mjs",
     "publish:release": "bun scripts/publish-release.ts",
     "release:macos": "bun scripts/release-macos.ts",
+    "release:android": "bun scripts/publish-android.ts",
     "appbun:create": "bun appbun ${APPBUN_URL:-https://litecheats.com} --name \"${APPBUN_NAME:-Litecheats}\" --out-dir ${APPBUN_OUT_DIR:-./litecheats} --yes",
     "appbun:dmg": "bun appbun ${APPBUN_URL:-https://litecheats.com} --name \"${APPBUN_NAME:-Litecheats}\" --out-dir ${APPBUN_OUT_DIR:-./litecheats} --dmg --yes",
     "appbun:hmr:create": "APPBUN_URL=${APPBUN_URL:-http://localhost:8080} bun run appbun:create",

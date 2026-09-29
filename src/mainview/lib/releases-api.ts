@@ -1,3 +1,4 @@
+import type { AndroidLatestResponse } from "shared/android";
 import { AUTH_API_PORT } from "shared/auth";
 import { DOWNLOADS_BASE_PATH, type ReleaseFeedResponse } from "shared/releases";
 
@@ -116,8 +117,27 @@ async function requestReleaseFeed(): Promise<ReleaseFeedResponse> {
 	return normalizedFeed;
 }
 
+/** Latest APK on the Android update channel, or null when none is published. */
+async function requestAndroidLatest(): Promise<AndroidLatestResponse> {
+	const response = await fetch(`${RELEASES_API_URL}/android/latest`, {
+		method: "GET",
+		cache: "no-store",
+		headers: { Pragma: "no-cache", "Cache-Control": "no-cache" },
+	});
+	const payload = await parseJson<AndroidLatestResponse | ApiErrorResponse>(response);
+	if (!response.ok || !payload || !("latest" in payload)) {
+		const message =
+			payload && "error" in payload
+				? payload.error
+				: `Android release request failed (${response.status})`;
+		throw new ReleasesApiError(response.status, message);
+	}
+	return payload;
+}
+
 export const releasesApi = {
 	getFeed: requestReleaseFeed,
+	getAndroidLatest: requestAndroidLatest,
 	getDownloadUrl(downloadPath: string) {
 		return `${RELEASES_API_ORIGIN}${downloadPath}`;
 	},

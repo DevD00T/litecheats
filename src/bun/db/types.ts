@@ -124,6 +124,23 @@ export interface ReleaseArtifactDocument {
 	createdAt: Date;
 }
 
+/** One published Android APK. The binary is in the release_files GridFS bucket under the same `_id`. */
+export interface AndroidReleaseDocument {
+	_id: string;
+	packageName: string;
+	versionCode: number;
+	versionName: string;
+	minSdkVersion: number | null;
+	sha256: string;
+	sizeBytes: number;
+	filename: string;
+	notes: string;
+	mandatory: boolean;
+	publishedAt: Date;
+	createdAt: Date;
+	updatedAt: Date;
+}
+
 export interface TelegramAdminDocument {
 	_id: string;
 	username: string;
