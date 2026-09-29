@@ -108,9 +108,9 @@ one. Older builds can be added to the history with "Add to version history" (or 
 
 The DigitalOcean droplet runs three pm2 processes from `deploy/ecosystem.config.cjs`:
 
-- `litecheats-web` runs the Bun server (`scripts/serve-dist.ts`).
-- `litecheats-tunnel` is a Cloudflare Tunnel serving `https://pwa.litecheats.cc`. The Android app uses it, with `litecheats.com` as a fallback.
-- `litecheats-bridge` is a watchdog. It health-checks the server, MongoDB and the tunnel, restarts whatever breaks, and deploys new commits on `main` automatically.
+- `litecheats-pwa-web` runs the Bun server (`scripts/serve-dist.ts`).
+- `litecheats-pwa-tunnel` is a Cloudflare Tunnel serving `https://pwa.litecheats.cc`. The Android app uses it, with `litecheats.com` as a fallback.
+- `litecheats-pwa-bridge` is a watchdog. It health-checks the server, MongoDB and the tunnel, restarts whatever breaks, and deploys new commits on `main` automatically.
 
 `GET /api/status/health` reports the server and database health. Setup: `bash deploy/setup-droplet.sh`, and see [deploy/README.md](deploy/README.md).
 

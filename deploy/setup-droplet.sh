@@ -5,7 +5,7 @@
 #
 # It installs Bun, pm2 and cloudflared, builds the web app, connects the
 # Cloudflare Tunnel for pwa.litecheats.cc, and starts three pm2 processes
-# (litecheats-web, litecheats-tunnel, litecheats-bridge) that come back after
+# (litecheats-pwa-web, litecheats-pwa-tunnel, litecheats-pwa-bridge) that come back after
 # a reboot. See deploy/README.md.
 set -euo pipefail
 
@@ -92,7 +92,7 @@ fi
 
 # ── Processes ────────────────────────────────────────────────────────────────
 say "pm2 processes"
-if ss -ltnp 2>/dev/null | grep -q ":$PORT " && ! pm2 describe litecheats-web >/dev/null 2>&1; then
+if ss -ltnp 2>/dev/null | grep -q ":$PORT " && ! pm2 describe litecheats-pwa-web >/dev/null 2>&1; then
 	warn "Something else already listens on :$PORT:"
 	ss -ltnp | grep ":$PORT " || true
 	warn "Stop the old server (e.g. 'pm2 delete <old name>' or 'systemctl stop <unit>'), then re-run this script."
@@ -114,4 +114,4 @@ sleep 5
 curl -sS -w "  public https://$HOSTNAME_PUBLIC/api/status/health -> %{http_code}\n" "https://$HOSTNAME_PUBLIC/api/status/health" || true
 pm2 ls
 echo
-echo "Logs:   pm2 logs litecheats-web | pm2 logs litecheats-bridge | pm2 logs litecheats-tunnel"
+echo "Logs:   pm2 logs litecheats-pwa-web | pm2 logs litecheats-pwa-bridge | pm2 logs litecheats-pwa-tunnel"

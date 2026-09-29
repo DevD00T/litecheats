@@ -4,11 +4,32 @@ The DigitalOcean droplet runs Litecheats from a git checkout of this repo with *
 
 | pm2 process | What it runs | Job |
 | --- | --- | --- |
-| `litecheats-web` | `bun scripts/serve-dist.ts` | The web app, the PWA and every API (`/login`, `/downloads`, `/api/status`, Razorpay and WhatsApp webhooks, Telegram bot). Port 8080; the API is on 8787 inside it. |
-| `litecheats-tunnel` | `cloudflared tunnel run` | Connects `https://pwa.litecheats.cc` to `http://localhost:8080` through Cloudflare. It needs no open ports or certificates on the droplet. |
-| `litecheats-bridge` | `bun scripts/bridge.ts` | A watchdog that keeps everything connected and up to date (details below). |
+| `litecheats-pwa-web` | `bun scripts/serve-dist.ts` | The web app, the PWA and every API (`/login`, `/downloads`, `/api/status`, Razorpay and WhatsApp webhooks, Telegram bot). Port 8080; the API is on 8787 inside it. |
+| `litecheats-pwa-tunnel` | `cloudflared tunnel run` | Connects `https://pwa.litecheats.cc` to `http://localhost:8080` through Cloudflare. It needs no open ports or certificates on the droplet. |
+| `litecheats-pwa-bridge` | `bun scripts/bridge.ts` | A watchdog that keeps everything connected and up to date (details below). |
 
 The Android app (1.7+) calls `https://pwa.litecheats.cc` first and falls back to `https://litecheats.com` by itself. Both hosts reach the same server and database, so the user stays signed in whichever one answers.
+
+## Current setup: tunnel from a Windows PC
+
+There is no droplet at the moment. `litecheats.com` runs on App Platform, and `pwa.litecheats.cc` is
+served from a Windows PC (`DESKTOP-JS5NCQV`) through the Cloudflare Tunnel `litecheats-pwa`
+(id `b7a98d5a-f572-4a35-b900-106e12f88702`, CNAME `pwa.litecheats.cc` → `<id>.cfargotunnel.com`).
+The three pm2 processes run there next to the machine's other pm2 apps (CRM, SMS), whose names they
+don't share. The Startup folder's `pm2 resurrect` brings them back at logon. While the PC is off,
+`pwa.litecheats.cc` is down and the Android app falls back to `litecheats.com` by itself.
+
+**Upstream mode.** That PC has no database credentials, so `litecheats-pwa-web` runs with
+`API_UPSTREAM_URL=https://litecheats.com`: it serves the PWA itself and relays every API call to App
+Platform, passing the client's IP on. The upstream owns MongoDB, the Telegram bot and renewals, so
+nothing runs twice. The ecosystem file turns this on whenever `.env` has no `MONGODB_URI`. Add the
+production `MONGODB_URI` (and the other secrets) to `.env`, then run
+`pm2 startOrReload deploy/ecosystem.config.cjs --update-env`, and the PC runs the full API itself. In
+that case, set `TELEGRAM_BOT_ENABLED=false` there, because only one server may poll the bot.
+
+The bridge checks the tunnel through cloudflared's own `/ready` endpoint (`--metrics 127.0.0.1:20291`).
+If this machine can't resolve `pwa.litecheats.cc` (for example, its router still caches the name as
+not existing), the bridge only logs it and doesn't restart the tunnel.
 
 ## First-time setup
 
@@ -43,8 +64,8 @@ Every 30 seconds the bridge checks these endpoints:
 
 After three failures in a row it acts on what failed:
 
-- If a local check fails, it restarts `litecheats-web`.
-- If only the public check fails, it restarts `litecheats-tunnel`.
+- If a local check fails, it restarts `litecheats-pwa-web`.
+- If only the public check fails, it restarts `litecheats-pwa-tunnel`.
 
 Restarts are at least two minutes apart.
 
@@ -53,11 +74,11 @@ Restarts are at least two minutes apart.
 1. Fast-forwards the checkout.
 2. Runs `bun install`.
 3. Builds into `.dist-next`.
-4. Swaps the new build in and reloads `litecheats-web`.
+4. Swaps the new build in and reloads `litecheats-pwa-web`.
 
 If the new version isn't healthy within a minute, the bridge puts the previous build and commit back. It never touches a checkout with local changes. Pushing to GitHub is all it takes to update the site and the API. Set `BRIDGE_AUTO_DEPLOY` to `false` in `deploy/ecosystem.config.cjs` to turn this off.
 
-**Database watchdog.** `litecheats-web` has its own database watchdog, so a single stuck query doesn't have to wait for a restart. After an Atlas election or maintenance, a long-running MongoDB client can reject the new primary: "primary marked stale due to electionId/setVersion mismatch". Every query then fails until the client is recreated. The server pings MongoDB every 30 seconds and reconnects after two failed pings, or immediately when a request hits that error. Requests answer 503 while it reconnects, and the app retries them.
+**Database watchdog.** `litecheats-pwa-web` has its own database watchdog, so a single stuck query doesn't have to wait for a restart. After an Atlas election or maintenance, a long-running MongoDB client can reject the new primary: "primary marked stale due to electionId/setVersion mismatch". Every query then fails until the client is recreated. The server pings MongoDB every 30 seconds and reconnects after two failed pings, or immediately when a request hits that error. Requests answer 503 while it reconnects, and the app retries them.
 
 ## litecheats.com (App Platform)
 
@@ -69,9 +90,9 @@ In the App Platform component settings, set the **health check** HTTP path to `/
 
 ```bash
 pm2 ls                          # status of the three processes
-pm2 logs litecheats-web         # server logs (add --lines 200)
-pm2 logs litecheats-bridge      # health checks, restarts, deploys
-pm2 restart litecheats-web      # restart the server by hand
+pm2 logs litecheats-pwa-web         # server logs (add --lines 200)
+pm2 logs litecheats-pwa-bridge      # health checks, restarts, deploys
+pm2 restart litecheats-pwa-web      # restart the server by hand
 pm2 startOrReload deploy/ecosystem.config.cjs --update-env && pm2 save   # after editing the ecosystem file or .env
 curl -s localhost:8080/api/status/health                                  # {"ok":true,"db":{"ok":true,...}}
 ```

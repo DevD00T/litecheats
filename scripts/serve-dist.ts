@@ -65,20 +65,75 @@ async function ensureAuthServerRunning(): Promise<boolean> {
 	return true;
 }
 
+/**
+ * Upstream mode: with API_UPSTREAM_URL set (e.g. https://litecheats.com), this
+ * process serves the PWA itself but relays every API call to that server
+ * instead of running the API here. For a machine that has no database
+ * credentials, such as a tunnel host; the upstream owns MongoDB, the Telegram
+ * bot and the renewal sweep, so nothing runs twice.
+ */
+const API_UPSTREAM_URL = Bun.env.API_UPSTREAM_URL?.trim().replace(/\/+$/, "") || null;
+
+/** Hop-by-hop and Cloudflare headers that must not be replayed to the upstream. */
+const UPSTREAM_DROPPED_HEADERS = [
+	"host",
+	"connection",
+	"content-length",
+	"accept-encoding",
+	"cdn-loop",
+	"cf-connecting-ip",
+	"cf-ipcountry",
+	"cf-ray",
+	"cf-visitor",
+	"cf-warp-tag-id",
+	"x-forwarded-proto",
+	"x-forwarded-host",
+];
+
+async function proxyToUpstream(request: Request, upstream: string): Promise<Response> {
+	const url = new URL(request.url);
+	const headers = new Headers(request.headers);
+	// The upstream rate-limits and records sessions by client IP: pass the real one on.
+	const clientIp =
+		request.headers.get("cf-connecting-ip") ??
+		request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+	for (const name of UPSTREAM_DROPPED_HEADERS) headers.delete(name);
+	if (clientIp) headers.set("x-forwarded-for", clientIp);
+	// Plain bodies, so the response can be passed through byte for byte.
+	headers.set("accept-encoding", "identity");
+
+	const hasBody = request.method !== "GET" && request.method !== "HEAD";
+	const response = await fetch(`${upstream}${url.pathname}${url.search}`, {
+		method: request.method,
+		headers,
+		body: hasBody ? request.body : undefined,
+		redirect: "manual",
+		// @ts-expect-error Bun streams request bodies with duplex "half".
+		duplex: "half",
+	});
+	const responseHeaders = new Headers(response.headers);
+	responseHeaders.delete("content-encoding");
+	responseHeaders.delete("transfer-encoding");
+	return new Response(response.body, { status: response.status, headers: responseHeaders });
+}
+
 async function proxyAuthApi(request: Request): Promise<Response> {
+	if (API_UPSTREAM_URL) return proxyToUpstream(request, API_UPSTREAM_URL);
 	const url = new URL(request.url);
 	const proxyUrl = new URL(url.pathname + url.search, AUTH_SERVER_ORIGIN);
 	const proxiedRequest = new Request(proxyUrl, request);
 	return fetch(proxiedRequest);
 }
 
-const ownsAuthServer = await ensureAuthServerRunning();
+const ownsAuthServer = API_UPSTREAM_URL ? false : await ensureAuthServerRunning();
 
 // Telegram long polling allows exactly one consumer per bot token: a second
 // one makes the API answer 409 Conflict and neither instance receives updates
 // reliably. Only the process that actually owns the auth server starts the bot,
 // so running the desktop app and a dev gateway side by side is harmless.
-if (ownsAuthServer) {
+if (API_UPSTREAM_URL) {
+	console.log(`Upstream mode: API calls are relayed to ${API_UPSTREAM_URL}.`);
+} else if (ownsAuthServer) {
 	await startTelegramBot({ localPort: port });
 } else {
 	console.log("Telegram bot not started: another instance already owns the auth server.");
@@ -114,7 +169,7 @@ app.onRequest(({ request }) => {
 	}
 
 	if (pathname === CONTACT_API_PATH && request.method === "POST") {
-		return handleContactInquiry(request);
+		return API_UPSTREAM_URL ? proxyAuthApi(request) : handleContactInquiry(request);
 	}
 
 	// AUTH_BASE_PATH ("/login") and DOWNLOADS_BASE_PATH ("/downloads") are both

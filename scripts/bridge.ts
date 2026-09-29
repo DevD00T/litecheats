@@ -11,7 +11,7 @@
  *   - the public tunnel     GET $BRIDGE_PUBLIC_URL/api/status/health
  * and restarts the pm2 process that is at fault after a few failures in a row
  * (the web server when a local check fails, the tunnel when only the public
- * check fails).
+ * check fails). Process names default to litecheats-pwa-web / -tunnel.
  *
  * With BRIDGE_AUTO_DEPLOY=true it also follows GitHub: when origin/main moves
  * it pulls, installs, builds into a fresh folder, swaps it in and reloads the
@@ -33,9 +33,17 @@ const restartCooldownMs = seconds(Bun.env.BRIDGE_RESTART_COOLDOWN_SECONDS, 120);
 const autoDeploy = isTrue(Bun.env.BRIDGE_AUTO_DEPLOY);
 const deployIntervalMs = seconds(Bun.env.BRIDGE_DEPLOY_INTERVAL_SECONDS, 120);
 const deployBranch = Bun.env.BRIDGE_DEPLOY_BRANCH ?? "main";
-const webProcess = Bun.env.BRIDGE_WEB_PROCESS ?? "litecheats-web";
-const tunnelProcess = Bun.env.BRIDGE_TUNNEL_PROCESS ?? "litecheats-tunnel";
+const webProcess = Bun.env.BRIDGE_WEB_PROCESS ?? "litecheats-pwa-web";
+const tunnelProcess = Bun.env.BRIDGE_TUNNEL_PROCESS ?? "litecheats-pwa-tunnel";
+// cloudflared runs with --metrics on this address (deploy/ecosystem.config.cjs).
+const tunnelMetricsBase = `http://${Bun.env.BRIDGE_TUNNEL_METRICS ?? "127.0.0.1:20291"}`;
+let dnsWarned = false;
 const pm2Bin = Bun.env.PM2_BIN ?? "pm2";
+
+/** pm2 is a .cmd shim on Windows, which only cmd.exe can start. */
+function pm2(...args: string[]): string[] {
+	return process.platform === "win32" ? ["cmd.exe", "/d", "/c", pm2Bin, ...args] : [pm2Bin, ...args];
+}
 const bunBin = process.execPath;
 
 const distDir = `${repoDir}dist`;
@@ -110,7 +118,7 @@ async function restart(processName: string, reason: string): Promise<void> {
 	}
 	lastRestartAt[processName] = Date.now();
 	log(`restarting ${processName}`, { reason });
-	const result = await run([pm2Bin, "restart", processName, "--update-env"], 60_000);
+	const result = await run(pm2("restart", processName, "--update-env"), 60_000);
 	if (result.code !== 0) log(`pm2 restart ${processName} failed`, { output: result.output.slice(-500) });
 }
 
@@ -137,16 +145,30 @@ async function healthTick(): Promise<void> {
 		return;
 	}
 
-	const tunnel = await check(`${publicBase}/api/status/health`, is200);
-	if (tunnel.ok) {
+	// cloudflared's own readiness (200 once it holds a connection to Cloudflare's
+	// edge) is the direct signal; the public round trip confirms the whole path.
+	const [ready, tunnel] = await Promise.all([
+		check(`${tunnelMetricsBase}/ready`, is200),
+		check(`${publicBase}/api/status/health`, is200),
+	]);
+	// This machine not resolving the hostname (e.g. its router still caching
+	// "no such domain" after the record was created) says nothing about the
+	// tunnel, and restarting cloudflared would not fix it.
+	const dnsOnly = !tunnel.ok && /ENOTFOUND|EAI_AGAIN|getaddrinfo/i.test(tunnel.detail ?? "");
+	if (ready.ok && (tunnel.ok || dnsOnly)) {
 		if (publicFailures > 0) log(`${publicBase} reachable again`);
+		if (dnsOnly && !dnsWarned) {
+			log(`tunnel connected; ${publicBase} does not resolve from this machine yet (local DNS cache)`);
+			dnsWarned = true;
+		}
+		if (tunnel.ok) dnsWarned = false;
 		publicFailures = 0;
 		return;
 	}
 	publicFailures += 1;
-	log(`public check failed (${publicFailures}/${failuresBeforeRestart})`, { url: publicBase, tunnel });
+	log(`tunnel check failed (${publicFailures}/${failuresBeforeRestart})`, { url: publicBase, ready, tunnel });
 	if (publicFailures >= failuresBeforeRestart) {
-		await restart(tunnelProcess, "public URL unreachable while the local server is healthy");
+		await restart(tunnelProcess, ready.ok ? "public URL unreachable" : "cloudflared not connected to Cloudflare");
 	}
 }
 
@@ -216,7 +238,7 @@ async function deployTick(): Promise<void> {
 		}
 
 		swapDist(nextDistDir, prevDistDir);
-		await run([pm2Bin, "reload", webProcess, "--update-env"], 120_000);
+		await run(pm2("reload", webProcess, "--update-env"), 120_000);
 
 		if (await waitForHealthy(60_000)) {
 			log(`deployed ${remote.slice(0, 7)}`);
@@ -229,7 +251,7 @@ async function deployTick(): Promise<void> {
 			renameSync(prevDistDir, distDir);
 		}
 		await rollbackCode(head);
-		await run([pm2Bin, "reload", webProcess, "--update-env"], 120_000);
+		await run(pm2("reload", webProcess, "--update-env"), 120_000);
 	} finally {
 		rmSync(nextDistDir, { recursive: true, force: true });
 		deploying = false;
