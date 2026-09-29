@@ -1,19 +1,64 @@
 {
+	"id": "/",
 	"name": "Litecheats Technologies",
 	"short_name": "Litecheats",
+	"description": "RDOS fleet console, MAVLink cloud, billing and downloads from Litecheats Technologies.",
+	"start_url": "/?source=pwa",
+	"scope": "/",
+	"display": "standalone",
+	"display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+	"orientation": "any",
+	"theme_color": "#0f0f14",
+	"background_color": "#0f0f14",
+	"lang": "en-IN",
+	"dir": "ltr",
+	"categories": ["business", "productivity", "utilities"],
 	"icons": [
 		{
 			"src": "/android-chrome-192x192.png",
 			"sizes": "192x192",
-			"type": "image/png"
+			"type": "image/png",
+			"purpose": "any"
 		},
 		{
 			"src": "/android-chrome-512x512.png",
 			"sizes": "512x512",
-			"type": "image/png"
+			"type": "image/png",
+			"purpose": "any"
+		},
+		{
+			"src": "/maskable-192x192.png",
+			"sizes": "192x192",
+			"type": "image/png",
+			"purpose": "maskable"
+		},
+		{
+			"src": "/maskable-512x512.png",
+			"sizes": "512x512",
+			"type": "image/png",
+			"purpose": "maskable"
 		}
 	],
-	"theme_color": "#0f0f14",
-	"background_color": "#0f0f14",
-	"display": "standalone"
+	"shortcuts": [
+		{
+			"name": "Pricing",
+			"url": "/pricing",
+			"icons": [{ "src": "/android-chrome-192x192.png", "sizes": "192x192" }]
+		},
+		{
+			"name": "Account",
+			"url": "/account",
+			"icons": [{ "src": "/android-chrome-192x192.png", "sizes": "192x192" }]
+		},
+		{
+			"name": "Billing",
+			"url": "/billing",
+			"icons": [{ "src": "/android-chrome-192x192.png", "sizes": "192x192" }]
+		},
+		{
+			"name": "Downloads",
+			"url": "/downloads",
+			"icons": [{ "src": "/android-chrome-192x192.png", "sizes": "192x192" }]
+		}
+	]
 }

@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<meta name="theme-color" content="#0f0f14" />
+		<title>Offline · Litecheats</title>
+		<style>
+			:root {
+				color-scheme: dark;
+			}
+			body {
+				margin: 0;
+				min-height: 100vh;
+				display: grid;
+				place-items: center;
+				padding: 24px;
+				box-sizing: border-box;
+				background: #090911;
+				color: #f1f1f6;
+				font-family: Inter, "Segoe UI", system-ui, sans-serif;
+			}
+			main {
+				max-width: 420px;
+				padding: 28px;
+				border: 1px solid rgb(255 255 255 / 10%);
+				border-radius: 18px;
+				background: #13131c;
+				text-align: center;
+			}
+			img {
+				width: 72px;
+				height: 72px;
+				border-radius: 16px;
+			}
+			h1 {
+				margin: 18px 0 8px;
+				font-size: 24px;
+				letter-spacing: -0.01em;
+			}
+			p {
+				margin: 0 0 20px;
+				color: #9d9da8;
+				line-height: 1.6;
+			}
+			button {
+				border: 0;
+				border-radius: 10px;
+				padding: 11px 18px;
+				background: #ab88ff;
+				color: #0e0b19;
+				font: inherit;
+				font-weight: 600;
+				cursor: pointer;
+			}
+		</style>
+	</head>
+	<body>
+		<main>
+			<img src="/android-chrome-192x192.png" alt="" />
+			<h1>You're offline</h1>
+			<p>Litecheats can't reach the internet right now. Your account and data are safe; reconnect and try again.</p>
+			<button type="button" onclick="location.reload()">Try again</button>
+		</main>
+	</body>
+</html>

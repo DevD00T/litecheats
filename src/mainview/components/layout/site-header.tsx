@@ -2,6 +2,7 @@ import { useAuth } from "@/components/auth/auth-provider";
 import { buttonVariants } from "@/components/ui/button";
 import { type ZapHandle, ZapIcon } from "@/components/ui/zap";
 import { isBundledElectrobunRuntime } from "@/lib/electrobun";
+import { useInstallPrompt } from "@/lib/pwa";
 import { cn } from "@/lib/utils";
 import { motion } from "framer-motion";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -59,6 +60,7 @@ export function SiteHeader({ themeMode, onToggleTheme }: SiteHeaderProps) {
 	const logoRef = useRef<ZapHandle | null>(null);
 	const logoResetTimerRef = useRef<number | null>(null);
 	const [isLoggingOut, setIsLoggingOut] = useState(false);
+	const { canInstall, install } = useInstallPrompt();
 
 	const hasPrivilegedAccess = Boolean(user?.isAdmin || user?.isOwner);
 
@@ -195,6 +197,15 @@ export function SiteHeader({ themeMode, onToggleTheme }: SiteHeaderProps) {
 				</nav>
 
 				<div className="flex items-center gap-2">
+					{canInstall ? (
+						<button
+							type="button"
+							onClick={() => void install()}
+							className="inline-flex h-9 items-center rounded-lg border border-primary/40 bg-primary/12 px-3 text-xs font-semibold text-primary transition-colors hover:bg-primary/20"
+						>
+							Install app
+						</button>
+					) : null}
 					<button
 						type="button"
 						onClick={onToggleTheme}

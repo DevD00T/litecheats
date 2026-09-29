@@ -56,6 +56,36 @@ shared/           # Shared types between main and webview
   rpc.ts          # RPC schema definition (type-safe contract)
 ```
 
+## Progressive Web App
+
+The web app is an installable PWA:
+
+- `src/mainview/public/site.webmanifest`: name, `start_url`, `scope`, standalone display, regular and
+  maskable icons (`maskable-*.png`), and shortcuts to Pricing, Account, Billing and Downloads.
+- `src/mainview/public/sw.js`: page loads are network-first, falling back to the last app shell or
+  `offline.html` when offline. Vite's hashed `/assets/*` and Google Fonts are cache-first. The API
+  (`/login/*`, `/downloads/*`, `/api/*`, webhooks), file downloads and Razorpay are never intercepted.
+- `src/mainview/lib/pwa.ts`: registers the worker in production web builds only (not in dev and not in
+  the desktop shell), shows "A new version is ready → Reload" when an update is waiting, and powers the
+  header's **Install app** button.
+- `scripts/serve-dist.ts` serves `sw.js`, the manifest and `offline.html` with `Cache-Control: no-cache`,
+  so installed copies always pick up a new version.
+
+Service workers need HTTPS (or `localhost`). If you change the caching rules in `sw.js`, bump its `VERSION`.
+
+## Android app
+
+There is also a native Kotlin + Jetpack Compose Android app with the same pages and design. It calls
+the same Bun API (and so the same MongoDB database) with the same session cookie, and takes payments
+with Razorpay's Android SDK. Its source is kept outside this repository (`litecheats-sms-android/` is
+git-ignored).
+
+The app updates itself from this server. Publish a new APK with `bun run release:android --apk <file>
+--notes "…"` or from **Admin → Android**. The server reads the versionCode from the APK, stores it in
+GridFS (`android_releases` + `release_files`) with its SHA-256, and deletes older versions. Phones fetch
+`GET /downloads/android/latest`, verify the hash and signing key, and install the update. Optional env:
+`ANDROID_APP_ID` (default `com.litecheats.app`), `ANDROID_KEEP_RELEASES` (default `1`).
+
 ## Development
 
 ### Quick start

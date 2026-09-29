@@ -24,6 +24,11 @@ const port = Number(Bun.env.PORT ?? Bun.env.HTTP_PORT ?? 8080);
 const host = "0.0.0.0";
 const AUTH_SERVER_ORIGIN = `http://127.0.0.1:${AUTH_API_PORT}`;
 const CONTACT_API_PATH = "/contact/inquiry";
+const PWA_FILES: Record<string, string> = {
+	"/sw.js": "text/javascript; charset=utf-8",
+	"/site.webmanifest": "application/manifest+json",
+	"/offline.html": "text/html; charset=utf-8",
+};
 
 // @elysiajs/static's `indexHTML` option only serves index.html for paths that
 // resolve to a real directory on disk — it is not a generic SPA fallback. Any
@@ -94,6 +99,19 @@ if (telegramWebhookHealthHandler) {
 
 app.onRequest(({ request }) => {
 	const pathname = new URL(request.url).pathname;
+
+	// PWA files must bypass the HTTP cache: a stale sw.js or manifest would stop
+	// installed copies of the app from ever seeing a new version.
+	const pwaFile = PWA_FILES[pathname];
+	if (pwaFile && (request.method === "GET" || request.method === "HEAD")) {
+		return new Response(Bun.file(`${distDir}${pathname}`), {
+			headers: {
+				"Content-Type": pwaFile,
+				"Cache-Control": "no-cache",
+				"Service-Worker-Allowed": "/",
+			},
+		});
+	}
 
 	if (pathname === CONTACT_API_PATH && request.method === "POST") {
 		return handleContactInquiry(request);
