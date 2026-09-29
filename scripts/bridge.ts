@@ -90,7 +90,15 @@ const is200 = (status: number) => status === 200;
 const answered = (status: number) => status > 0 && status < 500;
 
 async function run(cmd: string[], timeoutMs = 10 * 60_000): Promise<{ code: number; output: string }> {
-	const proc = Bun.spawn(cmd, { cwd: repoDir, stdout: "pipe", stderr: "pipe", env: process.env });
+	const proc = Bun.spawn(cmd, {
+		cwd: repoDir,
+		stdout: "pipe",
+		stderr: "pipe",
+		env: process.env,
+		// Under pm2 on Windows every git/pm2/bun call would otherwise open a
+		// console window on the desktop (every two minutes for `git fetch`).
+		windowsHide: true,
+	});
 	const timer = setTimeout(() => proc.kill(), timeoutMs);
 	const [stdout, stderr, code] = await Promise.all([
 		new Response(proc.stdout).text(),
