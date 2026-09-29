@@ -1,4 +1,5 @@
 import { useAuth } from "@/components/auth/auth-provider";
+import { useNotifications } from "@/components/notifications/use-notifications";
 import { buttonVariants } from "@/components/ui/button";
 import { type ZapHandle, ZapIcon } from "@/components/ui/zap";
 import { isBundledElectrobunRuntime } from "@/lib/electrobun";
@@ -61,6 +62,7 @@ export function SiteHeader({ themeMode, onToggleTheme }: SiteHeaderProps) {
 	const logoResetTimerRef = useRef<number | null>(null);
 	const [isLoggingOut, setIsLoggingOut] = useState(false);
 	const { canInstall, install } = useInstallPrompt();
+	const { unread } = useNotifications();
 
 	const hasPrivilegedAccess = Boolean(user?.isAdmin || user?.isOwner);
 
@@ -225,6 +227,30 @@ export function SiteHeader({ themeMode, onToggleTheme }: SiteHeaderProps) {
 
 					{status !== "loading" && isAuthenticated ? (
 						<>
+							<Link
+								to="/notifications"
+								aria-label={unread ? `Notifications, ${unread} unread` : "Notifications"}
+								className="relative inline-flex h-9 w-9 items-center justify-center rounded-lg border border-border bg-background/40 text-foreground transition-colors hover:bg-accent/70"
+							>
+								<svg
+									viewBox="0 0 24 24"
+									fill="none"
+									stroke="currentColor"
+									strokeWidth="2"
+									strokeLinecap="round"
+									strokeLinejoin="round"
+									className="h-4 w-4"
+									aria-hidden="true"
+								>
+									<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" />
+									<path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
+								</svg>
+								{unread ? (
+									<span className="absolute -top-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-bold text-white">
+										{unread > 9 ? "9+" : unread}
+									</span>
+								) : null}
+							</Link>
 							{hasPrivilegedAccess ? (
 								<Link
 									to="/admin"

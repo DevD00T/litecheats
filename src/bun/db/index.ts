@@ -18,6 +18,7 @@ export * from "./android-releases";
 export * from "./billing";
 export * from "./client";
 export * from "./email-verification";
+export * from "./notifications";
 export * from "./releases";
 export * from "./schema";
 export * from "./sessions";

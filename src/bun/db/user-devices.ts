@@ -29,6 +29,8 @@ export async function upsertUserDevice(
 		...device,
 		_id,
 		updateDisclaimerAcceptedAt,
+		// Saving from the app means it's open right now.
+		lastSeenAt: now,
 		createdAt: existing?.createdAt ?? now,
 		updatedAt: now,
 	};
@@ -38,6 +40,20 @@ export async function upsertUserDevice(
 
 export async function listUserDevices(userId: string): Promise<WithId<UserDeviceDocument>[]> {
 	return (await userDevices()).find({ userId }).sort({ updatedAt: -1 }).toArray();
+}
+
+/** The app checked in (it polls for notifications): marks the device as seen now. */
+export async function touchUserDevice(userId: string, deviceId: string, now: Date): Promise<void> {
+	await (await userDevices()).updateOne(
+		{ _id: userDeviceId(userId, deviceId) },
+		{ $set: { lastSeenAt: now } },
+	);
+}
+
+/** Accounts with at least one app install, optionally only those seen since [since]. */
+export async function listUserIdsWithDevices(since?: Date): Promise<string[]> {
+	const filter = since ? { lastSeenAt: { $gte: since } } : {};
+	return (await (await userDevices()).distinct("userId", filter)) as string[];
 }
 
 export async function deleteUserDevice(userId: string, deviceId: string): Promise<boolean> {

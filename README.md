@@ -73,6 +73,20 @@ The web app is an installable PWA:
 
 Service workers need HTTPS (or `localhost`). If you change the caching rules in `sw.js`, bump its `VERSION`.
 
+## Notifications
+
+Admins and owners send notifications from **Admin → Notifications** (website) or **Admin → Notify**
+(Android app). Each send is stored per recipient (`notifications`, `notification_campaigns`,
+`notification_templates`) with placeholders like `{{firstName}}`, `{{planName}}` and `{{orderStatus}}`
+filled in. The Android app polls `GET /login/me/notifications` about every 45 seconds while open and every
+15 minutes in the background, and shows new ones as phone notifications; the website has an inbox
+(`/notifications`, bell in the header). Audiences: everyone, users with the app installed, online now,
+using the app now, or selected users.
+
+- Admins send templates. Owners also write custom notifications, pick individual users and manage templates.
+- Changing an order's status in Admin → Subscriptions sends the customer an automatic order update.
+- Delivered and read counts are shown per send.
+
 ## Android app
 
 There is also a native Kotlin + Jetpack Compose Android app with the same pages and design. It calls

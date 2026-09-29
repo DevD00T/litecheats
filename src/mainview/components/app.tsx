@@ -34,6 +34,7 @@ import { DownloadsPage } from "@/pages/downloads-page";
 import { DpdpCompliancePage } from "@/pages/dpdp-compliance-page";
 import { HomePage } from "@/pages/home-page";
 import { LoginPage } from "@/pages/login-page";
+import { NotificationsPage } from "@/pages/notifications-page";
 import { MavlinkCloudPage } from "@/pages/platform/mavlink-cloud-page";
 import { RdosConsolePage } from "@/pages/platform/rdos-console-page";
 import { PressKitPage } from "@/pages/press-kit-page";
@@ -139,6 +140,14 @@ function AnimatedRoutes() {
 					element={
 						<ProtectedRoute>
 							<AccountPage />
+						</ProtectedRoute>
+					}
+				/>
+				<Route
+					path="/notifications"
+					element={
+						<ProtectedRoute>
+							<NotificationsPage />
 						</ProtectedRoute>
 					}
 				/>

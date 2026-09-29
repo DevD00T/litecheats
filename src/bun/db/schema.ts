@@ -7,6 +7,7 @@ import {
 	WALLET_PAYMENT_MODES,
 } from "../../../shared/billing";
 import { DEVICE_PLATFORMS, LOCATION_ACCESS_LEVELS } from "../../../shared/devices";
+import { NOTIFICATION_AUDIENCES, NOTIFICATION_CATEGORIES } from "../../../shared/notifications";
 import { RELEASE_FORMATS, RELEASE_PLATFORMS } from "../../../shared/releases";
 
 /**
@@ -24,6 +25,9 @@ export const COLLECTIONS = {
 	releaseArtifacts: "release_artifacts",
 	androidReleases: "android_releases",
 	userDevices: "user_devices",
+	notifications: "notifications",
+	notificationCampaigns: "notification_campaigns",
+	notificationTemplates: "notification_templates",
 	telegramAdmins: "telegram_admins",
 	billingSubscriptions: "billing_subscriptions",
 	billingPayments: "billing_payments",
@@ -386,6 +390,7 @@ export const COLLECTION_DEFINITIONS: CollectionDefinition[] = [
 					properties: { termsAccepted: boolean, updateDisclaimerAccepted: boolean },
 				},
 				updateDisclaimerAcceptedAt: nullableDate,
+				lastSeenAt: nullableDate,
 				createdAt: date,
 				updatedAt: date,
 			},
@@ -393,7 +398,68 @@ export const COLLECTION_DEFINITIONS: CollectionDefinition[] = [
 		indexes: [
 			{ key: { userId: 1, deviceId: 1 }, name: "user_device_unique", unique: true },
 			{ key: { userId: 1, updatedAt: -1 }, name: "user_updatedAt" },
+			{ key: { lastSeenAt: -1 }, name: "lastSeenAt_desc" },
 		],
+	},
+	{
+		// One document per recipient per notification. Kept 180 days.
+		name: COLLECTIONS.notifications,
+		schema: objectSchema(["userId", "campaignId", "category", "title", "body", "createdAt"], {
+			userId: string,
+			campaignId: string,
+			category: enumOf(NOTIFICATION_CATEGORIES),
+			title: string,
+			body: string,
+			link: nullableString,
+			createdAt: date,
+			deliveredAt: nullableDate,
+			readAt: nullableDate,
+		}),
+		indexes: [
+			{ key: { userId: 1, createdAt: -1 }, name: "user_createdAt" },
+			{ key: { campaignId: 1 }, name: "campaignId" },
+			{ key: { createdAt: 1 }, name: "createdAt_ttl", expireAfterSeconds: 180 * DAY_SECONDS },
+		],
+	},
+	{
+		name: COLLECTIONS.notificationCampaigns,
+		schema: objectSchema(
+			["category", "title", "body", "audience", "recipientCount", "sentBy", "source", "createdAt"],
+			{
+				category: enumOf(NOTIFICATION_CATEGORIES),
+				title: string,
+				body: string,
+				link: nullableString,
+				audience: {
+					bsonType: "object",
+					required: ["type"],
+					properties: { type: enumOf(NOTIFICATION_AUDIENCES), userIds: { bsonType: "array" } },
+				},
+				templateId: nullableString,
+				recipientCount: nonNegative,
+				sentBy: string,
+				source: enumOf(["manual", "order-status"]),
+				createdAt: date,
+			},
+		),
+		indexes: [{ key: { createdAt: -1 }, name: "createdAt_desc" }],
+	},
+	{
+		name: COLLECTIONS.notificationTemplates,
+		schema: objectSchema(
+			["name", "category", "title", "body", "createdBy", "createdAt", "updatedAt"],
+			{
+				name: string,
+				category: enumOf(NOTIFICATION_CATEGORIES),
+				title: string,
+				body: string,
+				link: nullableString,
+				createdBy: string,
+				createdAt: date,
+				updatedAt: date,
+			},
+		),
+		indexes: [{ key: { updatedAt: -1 }, name: "updatedAt_desc" }],
 	},
 	{
 		name: COLLECTIONS.telegramAdmins,

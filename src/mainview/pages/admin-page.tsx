@@ -1,4 +1,5 @@
 import { AndroidReleasesSection } from "@/components/admin/android-releases-section";
+import { NotificationsSection } from "@/components/admin/notifications-section";
 import { SubscriptionManagementSection } from "@/components/admin/subscription-management-section";
 import { WhatsAppEventsSection } from "@/components/admin/whatsapp-events-section";
 import { useAuth } from "@/components/auth/auth-provider";
@@ -821,6 +822,7 @@ const ADMIN_TABS = [
 	{ key: "subscriptions", label: "Subscriptions" },
 	{ key: "releases", label: "Releases" },
 	{ key: "android", label: "Android" },
+	{ key: "notifications", label: "Notifications" },
 	{ key: "whatsapp", label: "WhatsApp" },
 ] as const;
 
@@ -1103,6 +1105,9 @@ export function AdminPage() {
 				{activeTab === "subscriptions" ? <SubscriptionManagementSection users={users} /> : null}
 				{activeTab === "releases" ? <ReleaseManagementSection /> : null}
 				{activeTab === "android" ? <AndroidReleasesSection /> : null}
+				{activeTab === "notifications" ? (
+					<NotificationsSection users={users} viewerIsOwner={viewerIsOwner} />
+				) : null}
 				{activeTab === "whatsapp" ? <WhatsAppEventsSection /> : null}
 				{activeTab === "users" ? (
 					<>

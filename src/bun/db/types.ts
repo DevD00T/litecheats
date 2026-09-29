@@ -13,6 +13,7 @@ import type {
 	DevicePlatform,
 	DevicePreferences,
 } from "../../../shared/devices";
+import type { NotificationAudience, NotificationCategory } from "../../../shared/notifications";
 import type { ReleaseFormat, ReleasePlatform } from "../../../shared/releases";
 
 export type { UserRole };
@@ -164,6 +165,49 @@ export interface UserDeviceDocument {
 	preferences: DevicePreferences;
 	consents: DeviceConsents;
 	updateDisclaimerAcceptedAt: Date | null;
+	/** Last time the app checked in (notification polling); drives the "online" audiences. */
+	lastSeenAt?: Date | null;
+	createdAt: Date;
+	updatedAt: Date;
+}
+
+/** One recipient's copy of a notification, placeholders already filled. */
+export interface NotificationDocument {
+	_id: string;
+	userId: string;
+	campaignId: string;
+	category: NotificationCategory;
+	title: string;
+	body: string;
+	link: string | null;
+	createdAt: Date;
+	/** First time an app or the website fetched it. */
+	deliveredAt: Date | null;
+	readAt: Date | null;
+}
+
+export interface NotificationCampaignDocument {
+	_id: string;
+	category: NotificationCategory;
+	title: string;
+	body: string;
+	link: string | null;
+	audience: NotificationAudience;
+	templateId: string | null;
+	recipientCount: number;
+	sentBy: string;
+	source: "manual" | "order-status";
+	createdAt: Date;
+}
+
+export interface NotificationTemplateDocument {
+	_id: string;
+	name: string;
+	category: NotificationCategory;
+	title: string;
+	body: string;
+	link: string | null;
+	createdBy: string;
 	createdAt: Date;
 	updatedAt: Date;
 }

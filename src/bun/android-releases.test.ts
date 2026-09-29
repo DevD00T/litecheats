@@ -5,7 +5,7 @@ const TOKEN = "test-token-0123456789abcdefghijklmnopqrstuvwxyz";
 
 describe("isAndroidPublishTokenValid", () => {
 	afterEach(() => {
-		delete Bun.env.ANDROID_PUBLISH_TOKEN;
+		Bun.env.ANDROID_PUBLISH_TOKEN = "";
 	});
 
 	test("accepts the configured bearer token", () => {

@@ -180,8 +180,29 @@ import {
 	listAndroidReleases,
 	updateAndroidReleaseFields,
 } from "./db";
-import { deleteUserDevice, deleteUserDevicesForUser } from "./db";
+import {
+	deleteNotificationTemplate,
+	deleteNotificationsForUser,
+	deleteUserDevice,
+	deleteUserDevicesForUser,
+	findBillingSubscriptionById,
+	markAllNotificationsRead,
+	markNotificationRead,
+} from "./db";
 import { sendVerificationCodeEmail } from "./email";
+import {
+	NotificationError,
+	fetchMyNotifications,
+	listCampaigns,
+	listTemplates,
+	notifyOrderStatusChanged,
+	parseNotificationDeviceId,
+	parseSendPayload,
+	parseTemplatePayload,
+	previewAudience,
+	saveTemplate,
+	sendNotification,
+} from "./notifications";
 import {
 	countRazorpayWebhookSecrets,
 	isRazorpayConfigured,
@@ -1692,6 +1713,7 @@ async function deleteUser(userId: string): Promise<void> {
 	await deleteBillingRecordsForUser(userId);
 	await deleteWalletDataForUser(userId);
 	await deleteUserDevicesForUser(userId);
+	await deleteNotificationsForUser(userId);
 }
 
 async function requirePrivilegedSession(request: Request): Promise<ResolvedSessionContext> {
@@ -2391,6 +2413,112 @@ async function handleDeleteMyDevice(request: Request, deviceId: string): Promise
 	return emptyResponse(request, 204);
 }
 
+// ---------------------------------------------------------------------------
+// Notifications: a user's inbox, and what admins/owners send
+// ---------------------------------------------------------------------------
+
+async function handleMyNotifications(request: Request, url: URL): Promise<Response> {
+	assertWithinRateLimit(request, "notifications:list", AUTH_SESSION_RATE_LIMIT * 4);
+	const session = await resolveSessionUser(request);
+	if (!session) throw new HttpError(401, "Unauthorized.");
+	const deviceId = parseNotificationDeviceId(request.headers.get("x-litecheats-device"));
+	const limit = Number(url.searchParams.get("limit") ?? 50) || 50;
+	return jsonResponse(request, 200, await fetchMyNotifications(session.user._id, deviceId, limit));
+}
+
+async function handleReadNotification(request: Request, id: string): Promise<Response> {
+	assertWithinRateLimit(request, "notifications:read", AUTH_SESSION_RATE_LIMIT * 4);
+	const session = await resolveSessionUser(request);
+	if (!session) throw new HttpError(401, "Unauthorized.");
+	await getDb();
+	if (!(await markNotificationRead(session.user._id, id, new Date()))) {
+		throw new HttpError(404, "Notification not found.");
+	}
+	return emptyResponse(request, 204);
+}
+
+async function handleReadAllNotifications(request: Request): Promise<Response> {
+	assertWithinRateLimit(request, "notifications:read-all", AUTH_SESSION_RATE_LIMIT);
+	const session = await resolveSessionUser(request);
+	if (!session) throw new HttpError(401, "Unauthorized.");
+	await getDb();
+	const updated = await markAllNotificationsRead(session.user._id, new Date());
+	return jsonResponse(request, 200, { updated });
+}
+
+async function requireOwnerSession(request: Request): Promise<ResolvedSessionContext> {
+	const session = await requirePrivilegedSession(request);
+	if (!hasOwnerAccess(session.user)) throw new HttpError(403, "Only owners can do this.");
+	return session;
+}
+
+async function handleAdminNotificationTemplates(request: Request): Promise<Response> {
+	assertWithinRateLimit(request, "admin:notifications:templates", AUTH_SESSION_RATE_LIMIT);
+	if (request.method === "GET") {
+		await requirePrivilegedSession(request);
+		return jsonResponse(request, 200, { templates: await listTemplates() });
+	}
+	const session = await requireOwnerSession(request);
+	await saveTemplate(
+		null,
+		parseTemplatePayload(await readRequestJson(request)),
+		session.user.email,
+	);
+	return jsonResponse(request, 201, { templates: await listTemplates() });
+}
+
+async function handleAdminNotificationTemplate(request: Request, id: string): Promise<Response> {
+	assertWithinRateLimit(request, "admin:notifications:template", AUTH_SESSION_RATE_LIMIT);
+	const session = await requireOwnerSession(request);
+	if (request.method === "DELETE") {
+		await getDb();
+		if (!(await deleteNotificationTemplate(id))) throw new HttpError(404, "Template not found.");
+	} else {
+		await saveTemplate(
+			id,
+			parseTemplatePayload(await readRequestJson(request)),
+			session.user.email,
+		);
+	}
+	return jsonResponse(request, 200, { templates: await listTemplates() });
+}
+
+async function handleAdminAudiencePreview(request: Request): Promise<Response> {
+	assertWithinRateLimit(request, "admin:notifications:preview", AUTH_SESSION_RATE_LIMIT * 2);
+	const session = await requirePrivilegedSession(request);
+	const body = (await readRequestJson(request)) as { audience?: unknown } | null;
+	const payload = parseSendPayload({
+		category: "custom",
+		title: "preview",
+		body: "preview",
+		audience: body?.audience,
+	});
+	if (payload.audience.type === "users" && !hasOwnerAccess(session.user)) {
+		throw new HttpError(403, "Only owners can send to hand-picked users.");
+	}
+	return jsonResponse(request, 200, await previewAudience(payload.audience));
+}
+
+async function handleAdminSendNotification(request: Request): Promise<Response> {
+	assertWithinRateLimit(request, "admin:notifications:send", AUTH_SESSION_RATE_LIMIT);
+	const session = await requirePrivilegedSession(request);
+	const payload = parseSendPayload(await readRequestJson(request));
+	const campaign = await sendNotification(payload, {
+		sentBy: session.user.email,
+		isOwner: hasOwnerAccess(session.user),
+	});
+	console.log(
+		`[notifications] ${session.user.email} sent "${campaign.title}" (${campaign.category}) to ${campaign.recipientCount} user(s), audience ${campaign.audience.type}.`,
+	);
+	return jsonResponse(request, 201, { campaign });
+}
+
+async function handleAdminNotificationCampaigns(request: Request): Promise<Response> {
+	assertWithinRateLimit(request, "admin:notifications:campaigns", AUTH_SESSION_RATE_LIMIT);
+	await requirePrivilegedSession(request);
+	return jsonResponse(request, 200, { campaigns: await listCampaigns() });
+}
+
 async function handleAdminListUserDevices(request: Request, userId: string): Promise<Response> {
 	assertWithinRateLimit(request, "admin:devices:list", AUTH_SESSION_RATE_LIMIT);
 	await requirePrivilegedSession(request);
@@ -2948,7 +3076,13 @@ async function handleAdminUpdateOrder(request: Request, orderId: string): Promis
 	assertWithinRateLimit(request, "admin:orders:update", AUTH_SESSION_RATE_LIMIT);
 	await requirePrivilegedSession(request);
 	const patch = parseAdminUpdateOrderPayload(await readRequestJson(request));
+	await getDb();
+	const before = await findBillingSubscriptionById(orderId);
 	const response = await adminUpdateOrder(orderId, patch);
+	// Tell the customer when their order's status changes.
+	if (before && patch.status && patch.status !== before.status) {
+		await notifyOrderStatusChanged(before, patch.status);
+	}
 	return jsonResponse(request, 200, response);
 }
 
@@ -3277,6 +3411,40 @@ async function routeRequest(request: Request): Promise<Response> {
 		return handleAdminListUserDevices(request, decodeURIComponent(adminUserDevicesMatch[1] ?? ""));
 	}
 
+	if (request.method === "GET" && url.pathname === `${AUTH_BASE_PATH}/me/notifications`) {
+		return handleMyNotifications(request, url);
+	}
+	if (request.method === "POST" && url.pathname === `${AUTH_BASE_PATH}/me/notifications/read-all`) {
+		return handleReadAllNotifications(request);
+	}
+	const readNotificationMatch = url.pathname.match(
+		new RegExp(`^${AUTH_BASE_PATH}/me/notifications/([^/]+)/read$`),
+	);
+	if (readNotificationMatch && request.method === "POST") {
+		return handleReadNotification(request, decodeURIComponent(readNotificationMatch[1] ?? ""));
+	}
+
+	const adminNotifications = `${AUTH_ADMIN_BASE_PATH}/notifications`;
+	if (
+		url.pathname === `${adminNotifications}/templates` &&
+		(request.method === "GET" || request.method === "POST")
+	) {
+		return handleAdminNotificationTemplates(request);
+	}
+	const templateMatch = url.pathname.match(new RegExp(`^${adminNotifications}/templates/([^/]+)$`));
+	if (templateMatch && (request.method === "PATCH" || request.method === "DELETE")) {
+		return handleAdminNotificationTemplate(request, decodeURIComponent(templateMatch[1] ?? ""));
+	}
+	if (request.method === "POST" && url.pathname === `${adminNotifications}/audience-preview`) {
+		return handleAdminAudiencePreview(request);
+	}
+	if (request.method === "POST" && url.pathname === `${adminNotifications}/send`) {
+		return handleAdminSendNotification(request);
+	}
+	if (request.method === "GET" && url.pathname === `${adminNotifications}/campaigns`) {
+		return handleAdminNotificationCampaigns(request);
+	}
+
 	if (request.method === "GET" && url.pathname === `${AUTH_BASE_PATH}/me/devices`) {
 		return handleListMyDevices(request);
 	}
@@ -3408,7 +3576,8 @@ async function handleRequestWithErrorBoundary(request: Request): Promise<Respons
 			error instanceof BillingError ||
 			error instanceof WhatsAppWebhookError ||
 			error instanceof AndroidReleaseError ||
-			error instanceof UserDeviceError
+			error instanceof UserDeviceError ||
+			error instanceof NotificationError
 		) {
 			return jsonResponse(request, error.status, buildErrorResponse(error.message));
 		}
