@@ -59,6 +59,12 @@ If the new version isn't healthy within a minute, the bridge puts the previous b
 
 **Database watchdog.** `litecheats-web` has its own database watchdog, so a single stuck query doesn't have to wait for a restart. After an Atlas election or maintenance, a long-running MongoDB client can reject the new primary: "primary marked stale due to electionId/setVersion mismatch". Every query then fails until the client is recreated. The server pings MongoDB every 30 seconds and reconnects after two failed pings, or immediately when a request hits that error. Requests answer 503 while it reconnects, and the app retries them.
 
+## litecheats.com (App Platform)
+
+`litecheats.com` is served by DigitalOcean App Platform, built from this repository. It is a second, independent server on the same MongoDB database, and the Android app falls back to it when `pwa.litecheats.cc` can't be reached.
+
+In the App Platform component settings, set the **health check** HTTP path to `/api/status/health`. `/healthz` stays green even when the database is unreachable. The deeper path returns 503 in that case, so App Platform replaces the container.
+
 ## Everyday commands
 
 ```bash
