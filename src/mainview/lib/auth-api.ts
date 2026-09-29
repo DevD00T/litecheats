@@ -31,6 +31,7 @@ import {
 	type WhatsAppSignupStartPayload,
 	type WhatsAppSignupVerifyPayload,
 } from "shared/auth";
+import type { UserDevicesResponse } from "shared/devices";
 import type {
 	AdminCreateReleasePayload,
 	AdminDeleteArtifactResponse,
@@ -262,6 +263,13 @@ export const authApi = {
 		authRequest<ReleaseFeedResponse>(`/admin/artifacts/${encodeURIComponent(artifactId)}`, {
 			method: "PATCH",
 			body: JSON.stringify(payload),
+		}),
+	getMyDevices: () => authRequest<UserDevicesResponse>("/me/devices", { method: "GET" }),
+	deleteMyDevice: (deviceId: string) =>
+		authRequest<null>(`/me/devices/${encodeURIComponent(deviceId)}`, { method: "DELETE" }),
+	getAdminUserDevices: (userId: string) =>
+		authRequest<UserDevicesResponse>(`/admin/users/${encodeURIComponent(userId)}/devices`, {
+			method: "GET",
 		}),
 	getAdminAndroidReleases: () =>
 		authRequest<AdminAndroidReleasesResponse>("/admin/android/releases", { method: "GET" }),

@@ -2,6 +2,7 @@ import { useAuth } from "@/components/auth/auth-provider";
 import { LinkWhatsAppCard } from "@/components/auth/link-whatsapp-card";
 import { formatWhatsAppPhone } from "@/components/auth/whatsapp-auth";
 import { SubscriptionCard } from "@/components/billing/subscription-card";
+import { DeviceList } from "@/components/devices/device-list";
 import { AnimatedPage } from "@/components/layout/animated-page";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -12,6 +13,7 @@ import { cn } from "@/lib/utils";
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import type { AuthSession } from "shared/auth";
+import type { UserDeviceSummary } from "shared/devices";
 import { toast } from "sonner";
 
 function formatRole(role: string): string {
@@ -31,6 +33,34 @@ export function AccountPage() {
 	const [isLoadingSessions, setIsLoadingSessions] = useState(false);
 	const [isLoggingOutAll, setIsLoggingOutAll] = useState(false);
 	const [revokingSessionId, setRevokingSessionId] = useState<string | null>(null);
+	const [devices, setDevices] = useState<UserDeviceSummary[]>([]);
+	const [removingDeviceId, setRemovingDeviceId] = useState<string | null>(null);
+
+	const loadDevices = useCallback(async () => {
+		try {
+			setDevices((await authApi.getMyDevices()).devices);
+		} catch {
+			// Optional card: the rest of the account page works without it.
+			setDevices([]);
+		}
+	}, []);
+
+	useEffect(() => {
+		void loadDevices();
+	}, [loadDevices]);
+
+	const handleRemoveDevice = async (device: UserDeviceSummary) => {
+		setRemovingDeviceId(device.deviceId);
+		try {
+			await authApi.deleteMyDevice(device.deviceId);
+			toast.success("Device removed. It is saved again the next time that app syncs.");
+			await loadDevices();
+		} catch (error) {
+			toast.error(error instanceof Error ? error.message : "Failed to remove the device.");
+		} finally {
+			setRemovingDeviceId(null);
+		}
+	};
 
 	useEffect(() => {
 		setFullName(user?.fullName ?? "");
@@ -332,6 +362,23 @@ export function AccountPage() {
 								))}
 							</div>
 						)}
+					</CardContent>
+				</Card>
+
+				<Card className="bg-background/90">
+					<CardHeader>
+						<CardTitle className="font-heading text-xl">Devices & permissions</CardTitle>
+						<CardDescription>
+							What you allowed in the Litecheats Android app on each phone. Only whether a
+							permission is allowed is stored, never your files or location.
+						</CardDescription>
+					</CardHeader>
+					<CardContent>
+						<DeviceList
+							devices={devices}
+							removingId={removingDeviceId}
+							onRemove={(device) => void handleRemoveDevice(device)}
+						/>
 					</CardContent>
 				</Card>
 

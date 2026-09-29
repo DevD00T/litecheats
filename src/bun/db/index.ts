@@ -23,6 +23,7 @@ export * from "./schema";
 export * from "./sessions";
 export * from "./telegram-admins";
 export * from "./types";
+export * from "./user-devices";
 export * from "./users";
 export * from "./wallet";
 export * from "./whatsapp-events";

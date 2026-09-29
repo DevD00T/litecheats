@@ -3,6 +3,7 @@ import { SubscriptionManagementSection } from "@/components/admin/subscription-m
 import { WhatsAppEventsSection } from "@/components/admin/whatsapp-events-section";
 import { useAuth } from "@/components/auth/auth-provider";
 import { formatWhatsAppPhone } from "@/components/auth/whatsapp-auth";
+import { DeviceList } from "@/components/devices/device-list";
 import { AnimatedPage } from "@/components/layout/animated-page";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -18,6 +19,7 @@ import type {
 	AuthUser,
 	SignupMethod,
 } from "shared/auth";
+import type { UserDeviceSummary } from "shared/devices";
 import {
 	RELEASE_FORMATS,
 	RELEASE_PLATFORMS,
@@ -837,6 +839,22 @@ export function AdminPage() {
 	const [savingId, setSavingId] = useState<string | null>(null);
 	const [deletingId, setDeletingId] = useState<string | null>(null);
 	const [creating, setCreating] = useState(false);
+	const [devicesByUser, setDevicesByUser] = useState<
+		Record<string, UserDeviceSummary[] | undefined>
+	>({});
+
+	const toggleDevices = async (userId: string) => {
+		if (devicesByUser[userId]) {
+			setDevicesByUser((previous) => ({ ...previous, [userId]: undefined }));
+			return;
+		}
+		try {
+			const response = await authApi.getAdminUserDevices(userId);
+			setDevicesByUser((previous) => ({ ...previous, [userId]: response.devices }));
+		} catch (error) {
+			toast.error(error instanceof Error ? error.message : "Failed to load devices.");
+		}
+	};
 	const [createForm, setCreateForm] = useState<AdminCreateUserPayload>({
 		id: "",
 		fullName: "",
@@ -1451,7 +1469,19 @@ export function AdminPage() {
 															>
 																{deletingId === user.id ? "Deleting..." : "Delete User"}
 															</Button>
+															<Button
+																type="button"
+																variant="outline"
+																onClick={() => void toggleDevices(user.id)}
+															>
+																{devicesByUser[user.id] ? "Hide devices" : "Devices & permissions"}
+															</Button>
 														</div>
+														{devicesByUser[user.id] ? (
+															<div className="mt-4">
+																<DeviceList devices={devicesByUser[user.id] ?? []} />
+															</div>
+														) : null}
 													</>
 												)}
 											</div>

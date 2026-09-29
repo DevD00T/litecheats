@@ -6,6 +6,7 @@ import {
 	BILLING_SUBSCRIPTION_STATUSES,
 	WALLET_PAYMENT_MODES,
 } from "../../../shared/billing";
+import { DEVICE_PLATFORMS, LOCATION_ACCESS_LEVELS } from "../../../shared/devices";
 import { RELEASE_FORMATS, RELEASE_PLATFORMS } from "../../../shared/releases";
 
 /**
@@ -22,6 +23,7 @@ export const COLLECTIONS = {
 	releaseVersions: "release_versions",
 	releaseArtifacts: "release_artifacts",
 	androidReleases: "android_releases",
+	userDevices: "user_devices",
 	telegramAdmins: "telegram_admins",
 	billingSubscriptions: "billing_subscriptions",
 	billingPayments: "billing_payments",
@@ -337,6 +339,61 @@ export const COLLECTION_DEFINITIONS: CollectionDefinition[] = [
 			},
 		),
 		indexes: [{ key: { versionCode: -1 }, name: "versionCode_unique", unique: true }],
+	},
+	{
+		// What a user allowed on each of their devices: permission status, update
+		// preferences and ticked consents. Never the data behind a permission.
+		name: COLLECTIONS.userDevices,
+		schema: objectSchema(
+			[
+				"userId",
+				"deviceId",
+				"platform",
+				"appVersionName",
+				"appVersionCode",
+				"permissions",
+				"preferences",
+				"consents",
+				"createdAt",
+				"updatedAt",
+			],
+			{
+				userId: string,
+				deviceId: string,
+				platform: enumOf(DEVICE_PLATFORMS),
+				appVersionName: string,
+				appVersionCode: nonNegative,
+				deviceModel: string,
+				osVersion: string,
+				permissions: {
+					bsonType: "object",
+					required: ["notifications", "installUpdates", "storage", "location"],
+					properties: {
+						notifications: boolean,
+						installUpdates: boolean,
+						storage: boolean,
+						location: enumOf(LOCATION_ACCESS_LEVELS),
+					},
+				},
+				preferences: {
+					bsonType: "object",
+					required: ["autoUpdate", "updateWifiOnly"],
+					properties: { autoUpdate: boolean, updateWifiOnly: boolean },
+				},
+				consents: {
+					bsonType: "object",
+					required: ["termsAccepted", "updateDisclaimerAccepted"],
+					properties: { termsAccepted: boolean, updateDisclaimerAccepted: boolean },
+				},
+				updateDisclaimerAcceptedAt: nullableDate,
+				createdAt: date,
+				updatedAt: date,
+			},
+		),
+		indexes: [
+			{ key: { userId: 1, deviceId: 1 }, name: "user_device_unique", unique: true },
+			{ key: { userId: 1, updatedAt: -1 }, name: "user_updatedAt" },
+		],
 	},
 	{
 		name: COLLECTIONS.telegramAdmins,

@@ -7,6 +7,12 @@ import type {
 	WalletPaymentMode,
 	WalletTransactionType,
 } from "../../../shared/billing";
+import type {
+	DeviceConsents,
+	DevicePermissions,
+	DevicePlatform,
+	DevicePreferences,
+} from "../../../shared/devices";
 import type { ReleaseFormat, ReleasePlatform } from "../../../shared/releases";
 
 export type { UserRole };
@@ -137,6 +143,27 @@ export interface AndroidReleaseDocument {
 	notes: string;
 	mandatory: boolean;
 	publishedAt: Date;
+	createdAt: Date;
+	updatedAt: Date;
+}
+
+/**
+ * What a user allowed on one of their devices (Android app). `_id` is
+ * `${userId}:${deviceId}`, so one device has exactly one record per account.
+ */
+export interface UserDeviceDocument {
+	_id: string;
+	userId: string;
+	deviceId: string;
+	platform: DevicePlatform;
+	appVersionName: string;
+	appVersionCode: number;
+	deviceModel: string;
+	osVersion: string;
+	permissions: DevicePermissions;
+	preferences: DevicePreferences;
+	consents: DeviceConsents;
+	updateDisclaimerAcceptedAt: Date | null;
 	createdAt: Date;
 	updatedAt: Date;
 }

@@ -179,12 +179,20 @@ import {
 	listAndroidReleases,
 	updateAndroidReleaseFields,
 } from "./db";
+import { deleteUserDevice, deleteUserDevicesForUser } from "./db";
 import { sendVerificationCodeEmail } from "./email";
 import {
 	countRazorpayWebhookSecrets,
 	isRazorpayConfigured,
 	isRazorpayWebhookConfigured,
 } from "./razorpay";
+import {
+	UserDeviceError,
+	listUserDeviceSummaries,
+	parseDeviceId,
+	parseUpsertDevicePayload,
+	saveUserDevice,
+} from "./user-devices";
 import {
 	createWalletTopup,
 	getRenewalNoticeForUser,
@@ -1682,6 +1690,7 @@ async function deleteUser(userId: string): Promise<void> {
 	await dbDeleteSessionsByUserId(userId);
 	await deleteBillingRecordsForUser(userId);
 	await deleteWalletDataForUser(userId);
+	await deleteUserDevicesForUser(userId);
 }
 
 async function requirePrivilegedSession(request: Request): Promise<ResolvedSessionContext> {
@@ -2348,6 +2357,43 @@ async function handleDeleteMe(request: Request): Promise<Response> {
 	return emptyResponse(request, 204, {
 		"Set-Cookie": clearSessionCookie(request),
 	});
+}
+
+// ---------------------------------------------------------------------------
+// Devices: what the user allowed in the Android app, per device
+// ---------------------------------------------------------------------------
+
+async function handleListMyDevices(request: Request): Promise<Response> {
+	assertWithinRateLimit(request, "devices:list", AUTH_SESSION_RATE_LIMIT);
+	const session = await resolveSessionUser(request);
+	if (!session) throw new HttpError(401, "Unauthorized.");
+	return jsonResponse(request, 200, { devices: await listUserDeviceSummaries(session.user._id) });
+}
+
+async function handleUpsertMyDevice(request: Request, deviceId: string): Promise<Response> {
+	assertWithinRateLimit(request, "devices:upsert", AUTH_SESSION_RATE_LIMIT);
+	const session = await resolveSessionUser(request);
+	if (!session) throw new HttpError(401, "Unauthorized.");
+	const payload = parseUpsertDevicePayload(await readRequestJson(request));
+	const device = await saveUserDevice(session.user._id, parseDeviceId(deviceId), payload);
+	return jsonResponse(request, 200, { device });
+}
+
+async function handleDeleteMyDevice(request: Request, deviceId: string): Promise<Response> {
+	assertWithinRateLimit(request, "devices:delete", AUTH_SESSION_RATE_LIMIT);
+	const session = await resolveSessionUser(request);
+	if (!session) throw new HttpError(401, "Unauthorized.");
+	await getDb();
+	if (!(await deleteUserDevice(session.user._id, parseDeviceId(deviceId)))) {
+		throw new HttpError(404, "Device not found.");
+	}
+	return emptyResponse(request, 204);
+}
+
+async function handleAdminListUserDevices(request: Request, userId: string): Promise<Response> {
+	assertWithinRateLimit(request, "admin:devices:list", AUTH_SESSION_RATE_LIMIT);
+	await requirePrivilegedSession(request);
+	return jsonResponse(request, 200, { devices: await listUserDeviceSummaries(userId) });
 }
 
 async function handleListSessions(request: Request): Promise<Response> {
@@ -3220,6 +3266,25 @@ async function routeRequest(request: Request): Promise<Response> {
 		return handleAdminDeleteReleaseArtifact(request, artifactId);
 	}
 
+	const adminUserDevicesMatch = url.pathname.match(
+		new RegExp(`^${AUTH_ADMIN_BASE_PATH}/users/([^/]+)/devices$`),
+	);
+	if (adminUserDevicesMatch && request.method === "GET") {
+		return handleAdminListUserDevices(request, decodeURIComponent(adminUserDevicesMatch[1] ?? ""));
+	}
+
+	if (request.method === "GET" && url.pathname === `${AUTH_BASE_PATH}/me/devices`) {
+		return handleListMyDevices(request);
+	}
+
+	const myDeviceMatch = url.pathname.match(new RegExp(`^${AUTH_BASE_PATH}/me/devices/([^/]+)$`));
+	if (myDeviceMatch && request.method === "PUT") {
+		return handleUpsertMyDevice(request, decodeURIComponent(myDeviceMatch[1] ?? ""));
+	}
+	if (myDeviceMatch && request.method === "DELETE") {
+		return handleDeleteMyDevice(request, decodeURIComponent(myDeviceMatch[1] ?? ""));
+	}
+
 	if (request.method === "GET" && url.pathname === `${AUTH_ADMIN_BASE_PATH}/users`) {
 		return handleAdminListUsers(request);
 	}
@@ -3338,7 +3403,8 @@ async function handleRequestWithErrorBoundary(request: Request): Promise<Respons
 			error instanceof HttpError ||
 			error instanceof BillingError ||
 			error instanceof WhatsAppWebhookError ||
-			error instanceof AndroidReleaseError
+			error instanceof AndroidReleaseError ||
+			error instanceof UserDeviceError
 		) {
 			return jsonResponse(request, error.status, buildErrorResponse(error.message));
 		}
