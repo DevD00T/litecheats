@@ -96,9 +96,13 @@ git-ignored).
 
 The app updates itself from this server. Publish a new APK with `bun run release:android --apk <file>
 --notes "…"` or from **Admin → Android**. The server reads the versionCode from the APK, stores it in
-GridFS (`android_releases` + `release_files`) with its SHA-256, and deletes older versions. The Android build script publishes by itself after every release build whose versionCode is newer than the live one, authenticating with `ANDROID_PUBLISH_TOKEN` (set the same value on the server). Phones fetch
+GridFS (`android_releases` + `release_files`) with its SHA-256. The newest version is **live**: everyone
+sees it on the Downloads page and phones install it. Older versions are kept as **version history**
+that only admins and owners see (Admin → Android, and a Version history card under Downloads) and
+download through `GET /login/admin/android/releases/:id/file`; the public download serves only the live
+one. Older builds can be added to the history with "Add to version history" (or `--archive`). The Android build script publishes by itself after every release build whose versionCode is newer than the live one, authenticating with `ANDROID_PUBLISH_TOKEN` (set the same value on the server). Phones fetch
 `GET /downloads/android/latest`, verify the hash and signing key, and install the update. Optional env:
-`ANDROID_APP_ID` (default `com.litecheats.app`), `ANDROID_KEEP_RELEASES` (default `1`).
+`ANDROID_APP_ID` (default `com.litecheats.app`), `ANDROID_KEEP_RELEASES` (default `0`, keep every version).
 
 ## Production (droplet)
 

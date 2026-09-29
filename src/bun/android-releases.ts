@@ -1,5 +1,9 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
-import { ANDROID_DOWNLOADS_PATH, type AndroidReleaseSummary } from "../../shared/android";
+import {
+	ANDROID_ADMIN_PATH,
+	ANDROID_DOWNLOADS_PATH,
+	type AndroidReleaseSummary,
+} from "../../shared/android";
 import { ApkParseError, readApkManifest } from "./apk-manifest";
 import {
 	type AndroidReleaseDocument,
@@ -15,11 +19,15 @@ import {
 export const ANDROID_APP_ID = (Bun.env.ANDROID_APP_ID ?? "com.litecheats.app").trim();
 
 /**
- * How many Android versions stay downloadable. The default of 1 means publishing
- * a new APK deletes every older one from GridFS, so phones can only ever be
- * offered the latest build.
+ * How many Android versions are kept. The default, 0, keeps every version: the
+ * newest is live for everyone, older ones stay as an archive that admins and
+ * owners can see and download. A positive number deletes all but that many
+ * newest versions on each publish.
  */
-export const ANDROID_KEEP_RELEASES = Math.max(1, Number(Bun.env.ANDROID_KEEP_RELEASES ?? 1) || 1);
+export const ANDROID_KEEP_RELEASES = Math.max(
+	0,
+	Math.floor(Number(Bun.env.ANDROID_KEEP_RELEASES ?? 0) || 0),
+);
 
 /** 200 MB is far above any real APK and keeps an accidental upload of something else out. */
 const ANDROID_APK_MAX_BYTES = Number(Bun.env.ANDROID_APK_MAX_BYTES ?? 200 * 1024 * 1024);
@@ -48,8 +56,10 @@ export class AndroidReleaseError extends Error {
 	}
 }
 
+/** `liveId` is the id of the highest versionCode, the one everyone is offered. */
 export function toAndroidReleaseSummary(
 	release: WithId<AndroidReleaseDocument>,
+	liveId: string | null,
 ): AndroidReleaseSummary {
 	return {
 		id: release._id,
@@ -64,6 +74,8 @@ export function toAndroidReleaseSummary(
 		mandatory: release.mandatory,
 		publishedAt: release.publishedAt.toISOString(),
 		downloadPath: `${ANDROID_DOWNLOADS_PATH}/${release._id}/file`,
+		adminDownloadPath: `${ANDROID_ADMIN_PATH}/${release._id}/file`,
+		live: release._id === liveId,
 	};
 }
 
@@ -71,6 +83,11 @@ export interface PublishAndroidApkInput {
 	apk: Uint8Array;
 	notes?: string;
 	mandatory?: boolean;
+	/**
+	 * Adds an older build to the archive instead of making it live. Its
+	 * versionCode must be lower than the live one's and not published yet.
+	 */
+	archive?: boolean;
 }
 
 export interface PublishAndroidApkResult {
@@ -85,7 +102,10 @@ export interface PublishAndroidApkResult {
  * 2. refuses another app's package, or a versionCode that isn't higher than the current one
  *    (Android would refuse to install a downgrade anyway),
  * 3. stores it in GridFS with its SHA-256,
- * 4. deletes the versions that fall outside ANDROID_KEEP_RELEASES.
+ * 4. deletes the versions that fall outside ANDROID_KEEP_RELEASES (none by default).
+ *
+ * With `archive` it instead files an older build under the live one, for the
+ * version history; phones are never offered it.
  */
 export async function publishAndroidApk(
 	input: PublishAndroidApkInput,
@@ -112,10 +132,17 @@ export async function publishAndroidApk(
 
 	await getDb();
 	const current = await findLatestAndroidRelease();
-	if (current && manifest.versionCode <= current.versionCode) {
+	if (input.archive) {
+		if (!current || manifest.versionCode >= current.versionCode) {
+			throw new AndroidReleaseError(
+				409,
+				`Only builds older than the live version can be added to the archive; ${manifest.versionName} (${manifest.versionCode}) would become the live version. Publish it normally instead.`,
+			);
+		}
+	} else if (current && manifest.versionCode <= current.versionCode) {
 		throw new AndroidReleaseError(
 			409,
-			`versionCode ${manifest.versionCode} is not newer than the published ${current.versionCode} (${current.versionName}). Bump versionCode in version.properties and rebuild.`,
+			`versionCode ${manifest.versionCode} is not newer than the live ${current.versionCode} (${current.versionName}). Bump versionCode in version.properties and rebuild, or tick "Add to version history" to file an older build.`,
 		);
 	}
 
@@ -131,7 +158,8 @@ export async function publishAndroidApk(
 		sizeBytes: apk.byteLength,
 		filename: `Litecheats-${manifest.versionName}-${manifest.versionCode}.apk`,
 		notes: (input.notes ?? "").trim().slice(0, 4000),
-		mandatory: Boolean(input.mandatory),
+		// An archived build is never offered, so it can't block anyone either.
+		mandatory: input.archive ? false : Boolean(input.mandatory),
 		publishedAt: now,
 		createdAt: now,
 		updatedAt: now,
@@ -149,9 +177,11 @@ export async function publishAndroidApk(
 		throw error;
 	}
 
-	const removed = await pruneAndroidReleases(ANDROID_KEEP_RELEASES);
+	const removed =
+		ANDROID_KEEP_RELEASES > 0 ? await pruneAndroidReleases(ANDROID_KEEP_RELEASES) : [];
+	const live = await findLatestAndroidRelease();
 	return {
-		release: toAndroidReleaseSummary(release),
+		release: toAndroidReleaseSummary(release, live?._id ?? null),
 		removed: removed.map((item) => ({
 			versionCode: item.versionCode,
 			versionName: item.versionName,

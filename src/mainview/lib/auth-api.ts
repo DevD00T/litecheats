@@ -273,11 +273,18 @@ export const authApi = {
 		}),
 	getAdminAndroidReleases: () =>
 		authRequest<AdminAndroidReleasesResponse>("/admin/android/releases", { method: "GET" }),
-	publishAdminAndroidRelease: (payload: { file: File; notes: string; mandatory: boolean }) => {
+	publishAdminAndroidRelease: (payload: {
+		file: File;
+		notes: string;
+		mandatory: boolean;
+		/** File an older build in the version history instead of making it live. */
+		archive?: boolean;
+	}) => {
 		const formData = new FormData();
 		formData.set("file", payload.file);
 		formData.set("notes", payload.notes);
 		formData.set("mandatory", String(payload.mandatory));
+		formData.set("archive", String(Boolean(payload.archive)));
 		return authRequest<AdminAndroidReleasesResponse>("/admin/android/releases", {
 			method: "POST",
 			body: formData,

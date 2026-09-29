@@ -22,7 +22,8 @@ function formatDateTime(value: string): string {
 /**
  * The Android in-app update channel. Upload a signed release APK and every
  * installed copy of the app offers it on its next check; the server reads the
- * versionCode from the APK, stores it in GridFS and deletes older versions.
+ * versionCode from the APK and stores it in GridFS. The newest version is live
+ * for everyone; older ones stay here as history for admins and owners.
  */
 export function AndroidReleasesSection() {
 	const [data, setData] = useState<AdminAndroidReleasesResponse | null>(null);
@@ -31,6 +32,7 @@ export function AndroidReleasesSection() {
 	const [fileInputKey, setFileInputKey] = useState(0);
 	const [notes, setNotes] = useState("");
 	const [mandatory, setMandatory] = useState(false);
+	const [archive, setArchive] = useState(false);
 	const [publishing, setPublishing] = useState(false);
 	const [busyId, setBusyId] = useState<string | null>(null);
 	const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({});
@@ -64,18 +66,26 @@ export function AndroidReleasesSection() {
 		}
 		setPublishing(true);
 		try {
-			const response = await authApi.publishAdminAndroidRelease({ file, notes, mandatory });
+			const response = await authApi.publishAdminAndroidRelease({
+				file,
+				notes,
+				mandatory,
+				archive,
+			});
 			apply(response);
-			const latest = response.releases[0];
+			const latest = response.releases.find((release) => release.live);
 			toast.success(
-				latest
-					? `Published ${latest.versionName} (versionCode ${latest.versionCode}). Phones will update on their next check.`
-					: "Published.",
+				archive
+					? "Added to the version history. The live version is unchanged."
+					: latest
+						? `Published ${latest.versionName} (versionCode ${latest.versionCode}). Phones will update on their next check.`
+						: "Published.",
 			);
 			setFile(null);
 			setFileInputKey((key) => key + 1);
 			setNotes("");
 			setMandatory(false);
+			setArchive(false);
 		} catch (error) {
 			toast.error(error instanceof Error ? error.message : "Publishing failed.");
 		} finally {
@@ -99,11 +109,13 @@ export function AndroidReleasesSection() {
 	};
 
 	const remove = async (release: AndroidReleaseSummary) => {
-		if (
-			!window.confirm(
-				`Delete ${release.versionName} (${release.versionCode})? Phones will stop being offered it.`,
-			)
-		) {
+		const previous = data?.releases.find((item) => !item.live);
+		const warning = release.live
+			? previous
+				? ` It is the live version: ${previous.versionName} becomes live, and phones already on ${release.versionName} are not downgraded.`
+				: " It is the only version: the app will have nothing to download."
+			: " It is removed from the version history.";
+		if (!window.confirm(`Delete ${release.versionName} (${release.versionCode})?${warning}`)) {
 			return;
 		}
 		setBusyId(release.id);
@@ -125,9 +137,10 @@ export function AndroidReleasesSection() {
 					<CardTitle className="font-heading text-xl">Android app updates</CardTitle>
 					<CardDescription>
 						Publish a signed release APK. The server reads its versionCode and versionName from the
-						APK, stores it in GridFS with its SHA-256, and deletes older versions (keeping the
-						newest {data?.keepCount ?? 1}). Installed apps download it, verify the hash and install
-						it.
+						APK and stores it in GridFS with its SHA-256. The newest version is live: everyone sees
+						and downloads it, and installed apps verify the hash and install it. Older versions stay
+						below as history that only admins and owners can see and download
+						{data?.keepCount ? ` (the newest ${data.keepCount} are kept)` : ""}.
 					</CardDescription>
 				</CardHeader>
 				<CardContent className="grid gap-4">
@@ -165,12 +178,24 @@ export function AndroidReleasesSection() {
 						<input
 							type="checkbox"
 							checked={mandatory}
+							disabled={archive}
 							onChange={(event) => setMandatory(event.target.checked)}
 						/>
 						Mandatory — users must install it before they can keep using the app
 					</label>
+					<label className="inline-flex items-center gap-2 text-sm">
+						<input
+							type="checkbox"
+							checked={archive}
+							onChange={(event) => {
+								setArchive(event.target.checked);
+								if (event.target.checked) setMandatory(false);
+							}}
+						/>
+						Add to version history — an older build, kept for admins; the live version stays
+					</label>
 					<Button type="button" disabled={publishing} onClick={() => void publish()}>
-						{publishing ? "Uploading..." : "Publish update"}
+						{publishing ? "Uploading..." : archive ? "Add to history" : "Publish update"}
 					</Button>
 				</CardContent>
 			</Card>
@@ -178,28 +203,42 @@ export function AndroidReleasesSection() {
 			<Card className="bg-background/90">
 				<CardHeader>
 					<CardTitle className="font-heading text-lg">Published versions</CardTitle>
+					{data?.releases.length ? (
+						<CardDescription>
+							{data.releases.length} version{data.releases.length === 1 ? "" : "s"}. Only the live
+							one is shown to users.
+						</CardDescription>
+					) : null}
 				</CardHeader>
 				<CardContent className="grid gap-3">
 					{loading ? <p className="text-sm text-muted-foreground">Loading...</p> : null}
 					{!loading && !data?.releases.length ? (
 						<p className="text-sm text-muted-foreground">No Android version published yet.</p>
 					) : null}
-					{data?.releases.map((release, index) => (
+					{data?.releases.map((release) => (
 						<div
 							key={release.id}
-							className="grid gap-3 rounded-lg border border-border/65 bg-muted/25 p-4"
+							className={
+								release.live
+									? "grid gap-3 rounded-lg border border-success/45 bg-success/[0.05] p-4"
+									: "grid gap-3 rounded-lg border border-border/65 bg-muted/25 p-4"
+							}
 						>
 							<div className="flex flex-wrap items-center gap-2">
 								<span className="font-heading text-base font-bold">{release.versionName}</span>
 								<Badge variant="secondary" className="font-code">
 									versionCode {release.versionCode}
 								</Badge>
-								{index === 0 ? (
+								{release.live ? (
 									<Badge variant="secondary" className="bg-success/12 text-success">
-										live
+										live · shown to everyone
 									</Badge>
-								) : null}
-								{release.mandatory ? (
+								) : (
+									<Badge variant="secondary" className="text-muted-foreground">
+										history · admins only
+									</Badge>
+								)}
+								{release.mandatory && release.live ? (
 									<Badge variant="secondary" className="bg-warning/12 text-warning">
 										mandatory
 									</Badge>
@@ -211,7 +250,7 @@ export function AndroidReleasesSection() {
 									IST · minSdk {release.minSdkVersion ?? "?"}
 								</span>
 								<span className="break-all font-code">sha256 {release.sha256}</span>
-								<a className="text-primary hover:underline" href={release.downloadPath}>
+								<a className="text-primary hover:underline" href={release.adminDownloadPath}>
 									{release.filename}
 								</a>
 							</div>
@@ -231,15 +270,17 @@ export function AndroidReleasesSection() {
 								>
 									Save notes
 								</Button>
-								<Button
-									type="button"
-									size="sm"
-									variant="outline"
-									disabled={busyId === release.id}
-									onClick={() => void update(release, { mandatory: !release.mandatory })}
-								>
-									{release.mandatory ? "Make optional" : "Make mandatory"}
-								</Button>
+								{release.live ? (
+									<Button
+										type="button"
+										size="sm"
+										variant="outline"
+										disabled={busyId === release.id}
+										onClick={() => void update(release, { mandatory: !release.mandatory })}
+									>
+										{release.mandatory ? "Make optional" : "Make mandatory"}
+									</Button>
+								) : null}
 								<Button
 									type="button"
 									size="sm"

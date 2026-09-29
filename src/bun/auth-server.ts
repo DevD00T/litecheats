@@ -112,6 +112,7 @@ import {
 	verifyCheckout,
 } from "./billing";
 import {
+	type AndroidReleaseDocument,
 	type ReleaseArtifactDocument,
 	type ReleaseVersionDocument,
 	type SessionDocument,
@@ -2753,17 +2754,45 @@ async function handleAndroidLatest(request: Request): Promise<Response> {
 	await getDb();
 	const latest = await findLatestAndroidRelease();
 	const response: AndroidLatestResponse = {
-		latest: latest ? toAndroidReleaseSummary(latest) : null,
+		latest: latest ? toAndroidReleaseSummary(latest, latest._id) : null,
 	};
 	return jsonResponse(request, 200, response);
 }
 
+/** Public: only the live version. Older ones are history, served by handleAdminAndroidDownload. */
 async function handleAndroidDownload(request: Request, releaseId: string): Promise<Response> {
 	await getDb();
 	const release = await findAndroidReleaseById(releaseId);
 	if (!release)
 		throw new HttpError(404, "This app version is no longer available. Check for updates again.");
 
+	const live = await findLatestAndroidRelease();
+	if (live && live._id !== release._id) {
+		throw new HttpError(
+			404,
+			`${release.versionName} is no longer offered. Download the latest version, ${live.versionName}, instead.`,
+		);
+	}
+	return streamAndroidApk(request, release, true);
+}
+
+/**
+ * Any version, live or history, for admins and owners. Lives under /login so
+ * the session cookie (Path=/login) is sent with it.
+ */
+async function handleAdminAndroidDownload(request: Request, releaseId: string): Promise<Response> {
+	assertWithinRateLimit(request, "admin:android:download", AUTH_SESSION_RATE_LIMIT);
+	await requirePrivilegedSession(request);
+	const release = await findAndroidReleaseById(releaseId);
+	if (!release) throw new HttpError(404, "Android release not found.");
+	return streamAndroidApk(request, release, false);
+}
+
+async function streamAndroidApk(
+	request: Request,
+	release: WithId<AndroidReleaseDocument>,
+	shareable: boolean,
+): Promise<Response> {
 	const headers = createCorsHeaders(request);
 	headers.set("Content-Type", ANDROID_APK_MIME_TYPE);
 	headers.set(
@@ -2773,18 +2802,21 @@ async function handleAndroidDownload(request: Request, releaseId: string): Promi
 	headers.set("Content-Length", String(release.sizeBytes));
 	headers.set("X-Litecheats-Version-Code", String(release.versionCode));
 	headers.set("X-Litecheats-Sha256", release.sha256);
-	headers.set("Cache-Control", "public, max-age=300, immutable");
+	// An admin download was checked against the session; no shared cache may keep it.
+	headers.set("Cache-Control", shareable ? "public, max-age=300, immutable" : "private, no-store");
 	if (request.method === "HEAD") return new Response(null, { status: 200, headers });
 
-	const blob = await findArtifactBlobById(releaseId);
+	const blob = await findArtifactBlobById(release._id);
 	if (!blob) throw new HttpError(404, "APK file content not found.");
 	return new Response(blob, { status: 200, headers });
 }
 
 async function buildAdminAndroidResponse(): Promise<AdminAndroidReleasesResponse> {
 	await getDb();
+	const releases = await listAndroidReleases();
+	const liveId = releases[0]?._id ?? null;
 	return {
-		releases: (await listAndroidReleases()).map(toAndroidReleaseSummary),
+		releases: releases.map((release) => toAndroidReleaseSummary(release, liveId)),
 		packageName: ANDROID_APP_ID,
 		keepCount: ANDROID_KEEP_RELEASES,
 	};
@@ -2806,14 +2838,16 @@ async function handleAdminPublishAndroidRelease(request: Request): Promise<Respo
 	const file = formData.get("file");
 	if (!(file instanceof File)) throw new HttpError(400, "APK file is required.");
 	const notes = formData.get("notes");
-	const mandatory = String(formData.get("mandatory") ?? "").toLowerCase();
+	const flag = (name: string) =>
+		["true", "1", "on"].includes(String(formData.get(name) ?? "").toLowerCase());
 	const result = await publishAndroidApk({
 		apk: new Uint8Array(await file.arrayBuffer()),
 		notes: typeof notes === "string" ? notes : "",
-		mandatory: mandatory === "true" || mandatory === "1" || mandatory === "on",
+		mandatory: flag("mandatory"),
+		archive: flag("archive"),
 	});
 	console.log(
-		`[android] ${publisher} published ${result.release.versionName} (${result.release.versionCode}), sha256 ${result.release.sha256}; removed ${result.removed.length} older version(s).`,
+		`[android] ${publisher} ${result.release.live ? "published" : "archived"} ${result.release.versionName} (${result.release.versionCode}), sha256 ${result.release.sha256}; removed ${result.removed.length} older version(s).`,
 	);
 	return jsonResponse(request, 201, await buildAdminAndroidResponse());
 }
@@ -3422,6 +3456,13 @@ async function routeRequest(request: Request): Promise<Response> {
 	if (url.pathname === ANDROID_ADMIN_PATH) {
 		if (request.method === "GET") return handleAdminListAndroidReleases(request);
 		if (request.method === "POST") return handleAdminPublishAndroidRelease(request);
+	}
+
+	const adminAndroidFileMatch = url.pathname.match(
+		new RegExp(`^${ANDROID_ADMIN_PATH}/([^/]+)/file$`),
+	);
+	if (adminAndroidFileMatch && (request.method === "GET" || request.method === "HEAD")) {
+		return handleAdminAndroidDownload(request, decodeURIComponent(adminAndroidFileMatch[1] ?? ""));
 	}
 
 	const adminAndroidMatch = url.pathname.match(new RegExp(`^${ANDROID_ADMIN_PATH}/([^/]+)$`));

@@ -27,7 +27,15 @@ export interface AndroidReleaseSummary {
 	/** When true the app blocks use until the update is installed. */
 	mandatory: boolean;
 	publishedAt: string;
+	/** Public download. Works for the live version only. */
 	downloadPath: string;
+	/** Download of any version for admins and owners (under /login, so the session cookie is sent). */
+	adminDownloadPath: string;
+	/**
+	 * The version offered to everyone: the highest versionCode. Older versions are
+	 * kept as an archive that only admins and owners can see and download.
+	 */
+	live: boolean;
 }
 
 export interface AndroidLatestResponse {
@@ -38,7 +46,7 @@ export interface AdminAndroidReleasesResponse {
 	releases: AndroidReleaseSummary[];
 	/** The package every upload must carry (ANDROID_APP_ID, default com.litecheats.app). */
 	packageName: string;
-	/** How many versions are kept; older ones are deleted from GridFS on publish. */
+	/** How many versions are kept; 0 keeps every version (the default). */
 	keepCount: number;
 }
 

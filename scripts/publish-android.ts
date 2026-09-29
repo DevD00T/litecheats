@@ -6,8 +6,8 @@
  *   bun run release:android --apk litecheats-sms-android/dist/Litecheats-1.0.1-release.apk --notes "Bug fixes"
  *
  * The APK's package, versionCode and versionName are read from the APK itself.
- * The binary goes into GridFS, older versions are deleted (ANDROID_KEEP_RELEASES,
- * default 1), and every installed copy of the app picks the update up on its next
+ * The binary goes into GridFS, older versions stay as admin-only history (set
+ * ANDROID_KEEP_RELEASES to prune), and every installed copy of the app picks the update up on its next
  * check. Needs MONGODB_URI in .env, like the server.
  */
 import { resolve } from "node:path";
@@ -24,11 +24,12 @@ async function main(): Promise<void> {
 	const apkPath = argValue(args, "--apk");
 	if (!apkPath || args.includes("--help")) {
 		console.log(`Usage:
-  bun scripts/publish-android.ts --apk <path-to.apk> [--notes "What changed"] [--mandatory]
+  bun scripts/publish-android.ts --apk <path-to.apk> [--notes "What changed"] [--mandatory] [--archive]
 
   --apk <path>     The signed release APK (e.g. litecheats-sms-android/dist/Litecheats-1.0.1-release.apk)
   --notes <text>   Shown to users in the update prompt
-  --mandatory      Users must install this update before they can keep using the app`);
+  --mandatory      Users must install this update before they can keep using the app
+  --archive        File an older build in the version history (admins only; never offered to phones)`);
 		process.exit(args.includes("--help") ? 0 : 1);
 	}
 
@@ -39,10 +40,11 @@ async function main(): Promise<void> {
 		apk: new Uint8Array(await file.arrayBuffer()),
 		notes: argValue(args, "--notes") ?? "",
 		mandatory: args.includes("--mandatory"),
+		archive: args.includes("--archive"),
 	});
 
 	const { release } = result;
-	console.log(`Published ${release.packageName} ${release.versionName}`);
+	console.log(`${release.live ? "Published" : "Archived"} ${release.packageName} ${release.versionName}`);
 	console.log(`  versionCode  ${release.versionCode}`);
 	console.log(`  sha256       ${release.sha256}`);
 	console.log(`  size         ${release.sizeBytes} bytes`);

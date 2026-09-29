@@ -78,6 +78,84 @@ export function useOutdatedDevices(latest: AndroidReleaseSummary | null) {
 	return { devices, outdated };
 }
 
+/**
+ * Every published version, for admins and owners only. Everyone else sees just
+ * the live version above; the server refuses older downloads to them too.
+ */
+function AndroidVersionHistory() {
+	const { user } = useAuth();
+	const privileged = Boolean(user?.isAdmin || user?.isOwner);
+	const [releases, setReleases] = useState<AndroidReleaseSummary[] | null>(null);
+
+	useEffect(() => {
+		if (!privileged) {
+			setReleases(null);
+			return;
+		}
+		let cancelled = false;
+		authApi
+			.getAdminAndroidReleases()
+			.then((response) => {
+				if (!cancelled) setReleases(response.releases);
+			})
+			.catch(() => {
+				if (!cancelled) setReleases(null);
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, [privileged]);
+
+	if (!privileged || !releases) return null;
+
+	return (
+		<Card className="downloads-card bg-background/90">
+			<CardHeader className="space-y-2">
+				<div className="flex flex-wrap items-center gap-2">
+					<CardTitle className="font-heading text-xl">Version history</CardTitle>
+					<Badge variant="secondary" className="text-muted-foreground">
+						admins &amp; owners only
+					</Badge>
+				</div>
+				<CardDescription>
+					Every published version. Users only see and download the live one; manage versions in
+					Admin → Android.
+				</CardDescription>
+			</CardHeader>
+			<CardContent className="grid gap-2">
+				{releases.map((item) => (
+					<div
+						key={item.id}
+						className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border border-border/60 bg-muted/20 px-3 py-2.5"
+					>
+						<span className="font-heading text-sm font-bold">{item.versionName}</span>
+						<Badge variant="secondary" className="font-code">
+							{item.versionCode}
+						</Badge>
+						{item.live ? (
+							<Badge variant="secondary" className="bg-success/12 text-success">
+								live
+							</Badge>
+						) : null}
+						<span className="text-xs text-muted-foreground">
+							{formatApkSize(item.sizeBytes)} · {formatPublished(item.publishedAt)} IST
+						</span>
+						<span className="hidden font-code text-[11px] text-muted-foreground/80 md:inline">
+							{item.sha256.slice(0, 16)}…
+						</span>
+						<a
+							href={releasesApi.getDownloadUrl(item.adminDownloadPath)}
+							className={cn(buttonVariants({ size: "sm", variant: "outline" }), "ml-auto")}
+						>
+							Download
+						</a>
+					</div>
+				))}
+			</CardContent>
+		</Card>
+	);
+}
+
 function Step({ n, title, children }: { n: string; title: string; children: React.ReactNode }) {
 	return (
 		<div className="rounded-[14px] border border-border bg-card/55 p-4">
@@ -229,6 +307,8 @@ export function AndroidDownloads({
 					) : null}
 				</CardContent>
 			</Card>
+
+			<AndroidVersionHistory />
 
 			<div>
 				<h2 className="font-heading text-xl font-bold tracking-tight">

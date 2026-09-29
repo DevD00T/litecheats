@@ -53,7 +53,7 @@ export async function findAndroidReleaseById(
 	return (await androidReleases()).findOne({ _id: id });
 }
 
-export async function listAndroidReleases(limit = 50): Promise<WithId<AndroidReleaseDocument>[]> {
+export async function listAndroidReleases(limit = 500): Promise<WithId<AndroidReleaseDocument>[]> {
 	return (await androidReleases()).find().sort({ versionCode: -1 }).limit(limit).toArray();
 }
 
@@ -85,8 +85,8 @@ export async function deleteAndroidRelease(id: string): Promise<void> {
 
 /**
  * Deletes every release except the newest `keep`, APK and metadata both, and
- * returns what was removed. This is what keeps GridFS from filling up with
- * versions no phone should install any more.
+ * returns what was removed. Only used when ANDROID_KEEP_RELEASES is set; by
+ * default every version is kept as history.
  */
 export async function pruneAndroidReleases(
 	keep: number,
