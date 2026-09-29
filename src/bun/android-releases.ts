@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { ANDROID_DOWNLOADS_PATH, type AndroidReleaseSummary } from "../../shared/android";
 import { ApkParseError, readApkManifest } from "./apk-manifest";
 import {
@@ -23,6 +23,21 @@ export const ANDROID_KEEP_RELEASES = Math.max(1, Number(Bun.env.ANDROID_KEEP_REL
 
 /** 200 MB is far above any real APK and keeps an accidental upload of something else out. */
 const ANDROID_APK_MAX_BYTES = Number(Bun.env.ANDROID_APK_MAX_BYTES ?? 200 * 1024 * 1024);
+
+/**
+ * Lets the Android build script publish without an admin browser session:
+ * `Authorization: Bearer <ANDROID_PUBLISH_TOKEN>`. Disabled unless the env var
+ * is set to at least 32 characters. Compared in constant time.
+ */
+export function isAndroidPublishTokenValid(authorization: string | null): boolean {
+	const expected = (Bun.env.ANDROID_PUBLISH_TOKEN ?? "").trim();
+	if (expected.length < 32 || !authorization) return false;
+	const match = /^Bearer\s+(.+)$/i.exec(authorization.trim());
+	if (!match?.[1]) return false;
+	const a = createHash("sha256").update(match[1].trim()).digest();
+	const b = createHash("sha256").update(expected).digest();
+	return timingSafeEqual(a, b);
+}
 
 export class AndroidReleaseError extends Error {
 	constructor(

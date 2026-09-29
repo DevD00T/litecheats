@@ -87,6 +87,7 @@ import {
 	ANDROID_APP_ID,
 	ANDROID_KEEP_RELEASES,
 	AndroidReleaseError,
+	isAndroidPublishTokenValid,
 	publishAndroidApk,
 	toAndroidReleaseSummary,
 } from "./android-releases";
@@ -2617,7 +2618,10 @@ async function handleAdminListAndroidReleases(request: Request): Promise<Respons
 
 async function handleAdminPublishAndroidRelease(request: Request): Promise<Response> {
 	assertWithinRateLimit(request, "admin:android:create", AUTH_SESSION_RATE_LIMIT);
-	const session = await requirePrivilegedSession(request);
+	// The build script publishes with ANDROID_PUBLISH_TOKEN; people use an admin session.
+	const publisher = isAndroidPublishTokenValid(request.headers.get("authorization"))
+		? "build script (publish token)"
+		: (await requirePrivilegedSession(request)).user.email;
 	const formData = await readRequestFormData(request);
 	const file = formData.get("file");
 	if (!(file instanceof File)) throw new HttpError(400, "APK file is required.");
@@ -2629,7 +2633,7 @@ async function handleAdminPublishAndroidRelease(request: Request): Promise<Respo
 		mandatory: mandatory === "true" || mandatory === "1" || mandatory === "on",
 	});
 	console.log(
-		`[android] ${session.user.email} published ${result.release.versionName} (${result.release.versionCode}), sha256 ${result.release.sha256}; removed ${result.removed.length} older version(s).`,
+		`[android] ${publisher} published ${result.release.versionName} (${result.release.versionCode}), sha256 ${result.release.sha256}; removed ${result.removed.length} older version(s).`,
 	);
 	return jsonResponse(request, 201, await buildAdminAndroidResponse());
 }
